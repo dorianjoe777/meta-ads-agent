@@ -278,6 +278,20 @@ def _verbatim_buyer_text(brief_markdown):
     return (match.group(1) if match else "").strip()
 
 
+def _pending_campaign_state(destination):
+    """Return one same-destination pending workflow, or an empty mapping."""
+    pending_path = ROOT_DIR / "dashboard" / "data" / "pending_campaign_workflow.json"
+    try:
+        state = json.loads(pending_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(state, dict) or str(state.get("status") or "").lower() != "pending":
+        return {}
+    if str(state.get("destination") or "").strip().lower() != str(destination or "").strip().lower():
+        return {}
+    return state
+
+
 def _pending_campaign_confirmation(destination, buyer_text):
     """Report whether a complete proposal is available for semantic review.
 
@@ -290,14 +304,8 @@ def _pending_campaign_confirmation(destination, buyer_text):
     accepts it; it never authorizes a new value by itself.
     """
     del buyer_text
-    pending_path = ROOT_DIR / "dashboard" / "data" / "pending_campaign_workflow.json"
-    try:
-        state = json.loads(pending_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return False
-    if not isinstance(state, dict) or str(state.get("status") or "").lower() != "pending":
-        return False
-    if str(state.get("destination") or "").strip().lower() != str(destination or "").strip().lower():
+    state = _pending_campaign_state(destination)
+    if not state:
         return False
     # Only a concrete proposal can be evaluated by the compiler. An empty
     # blocker record must still ask for the missing decisions.
@@ -317,16 +325,25 @@ def _pending_campaign_confirmation(destination, buyer_text):
 
 
 def _held_campaign_proposal(destination):
-    pending_path = ROOT_DIR / "dashboard" / "data" / "pending_campaign_workflow.json"
-    try:
-        state = json.loads(pending_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return ""
-    if not isinstance(state, dict) or str(state.get("status") or "").lower() != "pending":
-        return ""
-    if str(state.get("destination") or "").strip().lower() != str(destination or "").strip().lower():
-        return ""
+    state = _pending_campaign_state(destination)
     return str(state.get("proposal_brief_markdown") or "").strip()
+
+
+def _held_campaign_contract(destination):
+    """Return only compiler-supported fields from one durable pending contract.
+
+    The contract is continuity context, not fresh authorization. The semantic
+    compiler may preserve it only when the latest buyer messages accept or
+    retry the same pending campaign.
+    """
+    state = _pending_campaign_state(destination)
+    contract = state.get("campaign_contract") if isinstance(state.get("campaign_contract"), dict) else {}
+    allowed = set(destination_payload_properties(destination))
+    return {
+        key: value
+        for key, value in contract.items()
+        if key in allowed and value not in (None, "", [], {})
+    }
 
 
 def _buyer_decision_gaps(destination, brief_markdown):
@@ -787,6 +804,25 @@ def _terra_compile(
             }
 
 
+def _pending_contract_covers_structural_missing(contract, missing_fields):
+    """Whether a refusal dropped implementation state already held exactly.
+
+    These are not owner-approval fields. A provider that calls one of them
+    missing despite the same-campaign durable contract has produced a compiler
+    miss, so the next configured compiler should get a chance. Budget, copy,
+    creative, title, and destination-message approvals remain terminal semantic
+    decisions and are deliberately excluded.
+    """
+    if not isinstance(contract, dict):
+        return False
+    structural = {"name", "objective", "locations", "countries", "placements", "targeting_mode"}
+    missing = [str(value or "").strip() for value in (missing_fields or []) if str(value or "").strip()]
+    return bool(missing) and all(
+        field in structural and contract.get(field) not in (None, "", [], (), {})
+        for field in missing
+    )
+
+
 def _validate_compiled_candidate(
     destination,
     candidate,
@@ -794,6 +830,7 @@ def _validate_compiled_candidate(
     expected_targeting_mode="",
     expected_manual_placements=None,
     expected_location_ids=None,
+    pending_contract=None,
 ):
     model = str(candidate.get("model") or "")
     compiled = candidate.get("compiled")
@@ -809,6 +846,13 @@ def _validate_compiled_candidate(
 
     missing = [str(value).strip() for value in (compiled.get("missing_fields") or []) if str(value).strip()]
     if compiled.get("ready") is not True:
+        if _pending_contract_covers_structural_missing(pending_contract, missing):
+            return {
+                "terminal": False,
+                "reason": "campaign_compiler_contract_violation",
+                "missing_fields": missing,
+                "model": model,
+            }
         # A valid refusal is authoritative. Check it before candidate payload
         # invariants: ready=false deliberately carries an empty payload, so a
         # targeting check here would hide the actual missing buyer decisions.
@@ -978,11 +1022,12 @@ def compile_campaign_brief(tool, brief_markdown, *, timeout=240, config=None):
     config = config or load_config()
     timeout = max(30, min(int(timeout or 240), 300))
     pending_proposal = _held_campaign_proposal(destination)
+    pending_contract = _held_campaign_contract(destination)
     pending_proposal_section = (
         "<pending_campaign_proposal>\n"
-        "This is the complete proposal previously shown for this same destination. "
+        "This is the proposal previously shown for this same destination. "
         "It is context for semantic comparison only, never authorization. Preserve its "
-        "budget, copy, title, message, and creative only when the latest buyer messages "
+        "objective, geography, audience, placements, budget, copy, title, message, and creative only when the latest buyer messages "
         "clearly accept that proposal. If the buyer clearly supplies and approves an exact "
         "replacement for one field, preserve every other accepted field and compile the "
         "replacement; this is a resolved revision, not a reason to restart the proposal. "
@@ -997,6 +1042,23 @@ def compile_campaign_brief(tool, brief_markdown, *, timeout=240, config=None):
             "</pending_campaign_proposal>"
         )
     )
+    pending_contract_section = (
+        "<pending_campaign_contract>\n"
+        "This is the structured contract retained from the same pending campaign. It is continuity context, "
+        "not authorization by itself. When the latest buyer messages semantically accept or retry that campaign, "
+        "preserve every unchanged exact field, including objective, locations, placements, targeting mode, budget, "
+        "copy, title, destination message, creative, and approval flags. A shortened retry brief does not make a "
+        "retained placement or location missing. If the buyer rejects or changes a field, follow the latest message "
+        "and never restore the rejected value.\n"
+        f"{json.dumps(pending_contract, ensure_ascii=False, sort_keys=True)}\n"
+        "</pending_campaign_contract>"
+        if pending_contract
+        else (
+            "<pending_campaign_contract>\n"
+            "No structured pending contract exists for this destination.\n"
+            "</pending_campaign_contract>"
+        )
+    )
 
     prompt = f"""You are Admira's deterministic campaign payload compiler.
 Compile the latest natural-language brief for destination `{destination}` into the supplied JSON output schema.
@@ -1009,7 +1071,7 @@ The selected destination itself supplies its contract-defined objective; for Wha
 Audience automation and placement automation are different controls. If the brief explicitly says Advantage+ Audience, set targeting_mode to advantage_plus. If it explicitly disables Advantage+ Audience or requests manual/original audience targeting, set targeting_mode to manual. For a multi-ad-set brief with different audience modes, set targeting_mode inside every ad_sets item and preserve each item's decision; do not force one campaign-wide mode. Never infer either decision from placement wording.
 For multi-ad-set campaigns, locations, placements, prefilled_message/welcome_message, budgets, ages, genders, creative references, and ad copy may differ per item. Preserve those values inside each ad_sets item. Do not require a fake campaign-wide default when every ad set supplies the field.
 Every structured Meta location must preserve its `id`/`key` and its exact `type` (`city`, `region`, or `country`). Preserve `name` and `country_code` when supplied. Never emit an object containing only an ID; if exact structure is uncertain, preserve the buyer's natural city/region string so the backend resolves it live.
-The `## Verbatim recent buyer messages (authoritative)` section is the only evidence of owner decisions. The agent-authored summary above it is a proposal, not approval. Never copy a budget from a previous campaign, durable memory, pending workflow, or the summary. If the verbatim messages do not contain the current amount and currency, leave ready=false and include budget_confirmation in missing_fields, unless the current buyer message semantically accepts a complete pending proposal for this same destination. Likewise, primary_text, headline, creative_decision/creative_approved, and (for WhatsApp) prefilled_message/prefilled_message_approved require a clear current buyer selection or natural-language approval. If the buyer has not seen and accepted those exact values, leave ready=false. Interpret the latest buyer message against the complete pending proposal as a whole: an ordinary-language acceptance may preserve that proposal's budget, copy, title, message, and creative. When the buyer clearly approves one exact replacement value (for example, a shorter Meta-compatible WhatsApp opener), compile that replacement and preserve the other accepted fields. A rejection, request for a change without an exact resolved replacement, unrelated message, or unresolved ambiguity must not be treated as acceptance and must leave ready=false with the changed/missing field. Do not require a fixed phrase or exact wording.
+The `## Verbatim recent buyer messages (authoritative)` section is the only evidence of owner decisions. The agent-authored summary above it is a proposal, not approval. Never copy a budget from a previous campaign, durable memory, pending workflow, or the summary. If the verbatim messages do not contain the current amount and currency, leave ready=false and include budget_confirmation in missing_fields, unless the current buyer message semantically accepts a complete pending proposal for this same destination. Likewise, primary_text, headline, creative_decision/creative_approved, and (for WhatsApp) prefilled_message/prefilled_message_approved require a clear current buyer selection or natural-language approval. If the buyer has not seen and accepted those exact values, leave ready=false. Interpret the latest buyer message against the complete pending proposal and structured pending contract as a whole: an ordinary-language acceptance or retry may preserve every unchanged exact field, including objective, geography, placements, targeting, budget, copy, title, message, creative, and approval flags. When the buyer clearly approves one exact replacement value (for example, a shorter Meta-compatible WhatsApp opener), compile that replacement and preserve the other accepted fields. A rejection, request for a change without an exact resolved replacement, unrelated message, or unresolved ambiguity must not be treated as acceptance and must leave ready=false with the changed/missing field. Do not require a fixed phrase or exact wording.
 For WhatsApp, an explicit instruction to create now with one exact existing creative path and exact prefilled messages is the buyer's approved creative/message decision: encode creative_decision as reuse of that exact path and set creative_approved and prefilled_message_approved true. This is copying the buyer's creation authorization, not inventing approval.
 When the buyer instructed creation with an exact amount and currency, copy that wording into budget_confirmation; do not require a second sentence containing the word confirm.
 Obey every contract below. Output the supplied wrapper JSON only.
@@ -1027,6 +1089,8 @@ Obey every contract below. Output the supplied wrapper JSON only.
 </latest_campaign_markdown>
 
 {pending_proposal_section}
+
+{pending_contract_section}
 """
 
     deadline = time.monotonic() + timeout
@@ -1085,6 +1149,7 @@ Obey every contract below. Output the supplied wrapper JSON only.
             expected_targeting_mode=expected_targeting_mode,
             expected_manual_placements=expected_manual_placements,
             expected_location_ids=expected_location_ids,
+            pending_contract=pending_contract,
         )
         attempts[-1]["ok"] = bool(validated.get("ok"))
         attempts[-1]["reason"] = str(validated.get("reason") or "")

@@ -613,23 +613,21 @@ class CampaignContractRegressionTests(unittest.TestCase):
             }),
         }
 
-        class FakeProcess:
-            def __init__(self, command, **kwargs):
-                self.command = command
-                self.returncode = 0
-                self.pid = os.getpid()
+        terra_calls = []
 
-            def communicate(self, prompt, timeout=None):
-                output_path = Path(self.command[self.command.index("-o") + 1])
-                output_path.write_text(json.dumps(compiled_output), encoding="utf-8")
-                self.prompt = prompt
-                return "", ""
+        def fake_terra(prompt, schema, **kwargs):
+            terra_calls.append((prompt, kwargs))
+            return {
+                "ok": True,
+                "model": "gpt-5.6-terra",
+                "compiled": compiled_output,
+            }
 
         original = {
             "LATEST_BRIEF_FILE": compiler.LATEST_BRIEF_FILE,
             "LATEST_PAYLOAD_FILE": compiler.LATEST_PAYLOAD_FILE,
             "CONTRACT_FILE": compiler.CONTRACT_FILE,
-            "Popen": compiler.subprocess.Popen,
+            "terra": compiler._terra_compile,
         }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -638,8 +636,8 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 compiler.LATEST_PAYLOAD_FILE = root / "latest-campaign-payload.json"
                 compiler.CONTRACT_FILE = root / "contract.md"
                 compiler.CONTRACT_FILE.write_text("Never guess campaign values.", encoding="utf-8")
-                compiler.subprocess.Popen = FakeProcess
-                config = SimpleNamespace(codex_cli="codex", hermes_home=str(root / "hermes"))
+                compiler._terra_compile = fake_terra
+                config = SimpleNamespace(hermes_home=str(root / "hermes"))
                 result = compiler.compile_campaign_brief(
                     "create_whatsapp_campaign",
                     authoritative_buyer_brief(
@@ -652,13 +650,19 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["model"], "gpt-5.6-terra")
                 self.assertEqual(result["payload"]["daily_budget"], 5)
+                self.assertEqual(len(terra_calls), 1)
+                self.assertEqual(terra_calls[0][1]["tool"], "create_whatsapp_campaign")
+                self.assertEqual(
+                    terra_calls[0][0].count("Confirmo 5 USD diarios para Cartagena."),
+                    1,
+                )
                 self.assertEqual(oct(compiler.LATEST_BRIEF_FILE.stat().st_mode & 0o777), "0o600")
                 self.assertEqual(oct(compiler.LATEST_PAYLOAD_FILE.stat().st_mode & 0o777), "0o600")
             finally:
                 compiler.LATEST_BRIEF_FILE = original["LATEST_BRIEF_FILE"]
                 compiler.LATEST_PAYLOAD_FILE = original["LATEST_PAYLOAD_FILE"]
                 compiler.CONTRACT_FILE = original["CONTRACT_FILE"]
-                compiler.subprocess.Popen = original["Popen"]
+                compiler._terra_compile = original["terra"]
 
     def test_pending_campaign_proposal_accepts_natural_multifield_approval_without_repeating_budget(self):
         """A same-campaign proposal preserves its resolved budget on natural approval."""
@@ -689,6 +693,182 @@ class CampaignContractRegressionTests(unittest.TestCase):
                     ),
                 )
             self.assertEqual(gaps, [])
+
+    def test_pending_whatsapp_retry_preserves_confirmed_contract_when_brief_omits_placements(self):
+        """A retry brief must inherit confirmed placements from the pending contract."""
+        import campaign_payload_compiler as compiler
+
+        contract = {
+            "name": "Full Detail WhatsApp",
+            "daily_budget": 50000,
+            "budget_confirmation": "50.000 COP diarios",
+            "locations": ["Bogotá, Colombia"],
+            "placements": {"automatic": True},
+            "primary_text": "Reserva tu Full Detail.",
+            "headline": "Full Detail Premium",
+            "creative_image_path": "/app/output/creatives/full-detail.png",
+            "creative_decision": "Reutilizar el creativo aprobado",
+            "prefilled_message": "Hola, quiero agendar.",
+            "primary_text_approved": True,
+            "headline_approved": True,
+            "creative_approved": True,
+            "prefilled_message_approved": True,
+        }
+        retry_brief = authoritative_buyer_brief(
+            "Reintenta la campaña de WhatsApp con el presupuesto diario de 50.000 COP. "
+            "Confirmo el texto principal ‘Reserva tu Full Detail.’, el título ‘Full Detail Premium’, "
+            "el creativo /app/output/creatives/full-detail.png y el mensaje inicial ‘Hola, quiero agendar.’"
+        )
+        captured = []
+
+        def fake_gemini(model, prompt, schema, **kwargs):
+            captured.append(prompt)
+            self.assertIn("<pending_campaign_contract>", prompt)
+            self.assertIn(json.dumps(contract, ensure_ascii=False, sort_keys=True), prompt)
+            return {
+                "ok": True,
+                "model": model,
+                "compiled": {
+                    "ready": True,
+                    "missing_fields": [],
+                    "payload_json": json.dumps(contract),
+                },
+            }
+
+        original = {
+            "ROOT_DIR": compiler.ROOT_DIR,
+            "LATEST_BRIEF_FILE": compiler.LATEST_BRIEF_FILE,
+            "LATEST_PAYLOAD_FILE": compiler.LATEST_PAYLOAD_FILE,
+            "CONTRACT_FILE": compiler.CONTRACT_FILE,
+            "gemini": compiler._gemini_compile,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_dir = root / "dashboard" / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "pending_campaign_workflow.json").write_text(
+                json.dumps({
+                    "status": "pending",
+                    "destination": "whatsapp",
+                    "campaign_contract": contract,
+                }),
+                encoding="utf-8",
+            )
+            try:
+                compiler.ROOT_DIR = root
+                compiler.LATEST_BRIEF_FILE = data_dir / "campaign-compiler" / "latest-campaign.md"
+                compiler.LATEST_PAYLOAD_FILE = data_dir / "campaign-compiler" / "latest-campaign-payload.json"
+                compiler.CONTRACT_FILE = root / "campaign-contract.md"
+                compiler.CONTRACT_FILE.write_text("Never guess campaign values.", encoding="utf-8")
+                compiler._gemini_compile = fake_gemini
+                result = compiler.compile_campaign_brief(
+                    "create_whatsapp_campaign",
+                    retry_brief,
+                    config=SimpleNamespace(
+                        gemini_api_key="test-key",
+                        agent_chat_base_url="https://example.invalid",
+                    ),
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["payload"]["placements"], {"automatic": True})
+                self.assertEqual(result["payload"]["daily_budget"], 50000)
+                self.assertEqual(result["payload"]["primary_text"], contract["primary_text"])
+                self.assertEqual(result["payload"]["headline"], contract["headline"])
+                self.assertEqual(result["payload"]["creative_image_path"], contract["creative_image_path"])
+                self.assertEqual(result["payload"]["prefilled_message"], contract["prefilled_message"])
+                self.assertEqual(len(captured), 1)
+            finally:
+                compiler.ROOT_DIR = original["ROOT_DIR"]
+                compiler.LATEST_BRIEF_FILE = original["LATEST_BRIEF_FILE"]
+                compiler.LATEST_PAYLOAD_FILE = original["LATEST_PAYLOAD_FILE"]
+                compiler.CONTRACT_FILE = original["CONTRACT_FILE"]
+                compiler._gemini_compile = original["gemini"]
+
+    def test_pending_structural_refusal_falls_back_before_terra(self):
+        """A false missing-placement refusal must advance 3.6 -> 3.5."""
+        import campaign_payload_compiler as compiler
+
+        contract = {
+            "name": "Full Detail WhatsApp",
+            "daily_budget": 50000,
+            "budget_confirmation": "50.000 COP diarios",
+            "locations": ["Bogotá, Colombia"],
+            "placements": {"automatic": True},
+            "primary_text": "Reserva tu Full Detail.",
+            "headline": "Full Detail Premium",
+            "creative_image_path": "/app/output/creatives/full-detail.png",
+            "creative_decision": "Reutilizar el creativo aprobado",
+            "prefilled_message": "Hola, quiero agendar.",
+            "primary_text_approved": True,
+            "headline_approved": True,
+            "creative_approved": True,
+            "prefilled_message_approved": True,
+        }
+        retry_brief = authoritative_buyer_brief(
+            "Reintenta la campaña de WhatsApp con 50.000 COP diarios. Confirmo el texto "
+            "principal ‘Reserva tu Full Detail.’, el título ‘Full Detail Premium’, el creativo "
+            "/app/output/creatives/full-detail.png y el mensaje ‘Hola, quiero agendar.’"
+        )
+        models = []
+
+        def fake_gemini(model, prompt, schema, **kwargs):
+            models.append(model)
+            if model == "gemini-3.6-flash":
+                return {
+                    "ok": True,
+                    "model": model,
+                    "compiled": {
+                        "ready": False,
+                        "missing_fields": ["placements"],
+                        "payload_json": "{}",
+                    },
+                }
+            return {
+                "ok": True,
+                "model": model,
+                "compiled": {
+                    "ready": True,
+                    "missing_fields": [],
+                    "payload_json": json.dumps(contract),
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_dir = root / "dashboard" / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "pending_campaign_workflow.json").write_text(
+                json.dumps({
+                    "status": "pending",
+                    "destination": "whatsapp",
+                    "campaign_contract": contract,
+                }),
+                encoding="utf-8",
+            )
+            contract_file = root / "campaign-contract.md"
+            contract_file.write_text("Never guess campaign values.", encoding="utf-8")
+            with mock.patch.object(compiler, "ROOT_DIR", root), \
+                    mock.patch.object(compiler, "LATEST_BRIEF_FILE", data_dir / "campaign-compiler" / "latest-campaign.md"), \
+                    mock.patch.object(compiler, "LATEST_PAYLOAD_FILE", data_dir / "campaign-compiler" / "latest-campaign-payload.json"), \
+                    mock.patch.object(compiler, "CONTRACT_FILE", contract_file), \
+                    mock.patch.object(compiler, "_gemini_compile", side_effect=fake_gemini):
+                result = compiler.compile_campaign_brief(
+                    "create_whatsapp_campaign",
+                    retry_brief,
+                    config=SimpleNamespace(
+                        gemini_api_key="test-key",
+                        agent_chat_base_url="https://example.invalid",
+                    ),
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["model"], "gemini-3.5-flash")
+        self.assertEqual(models, ["gemini-3.6-flash", "gemini-3.5-flash"])
+        self.assertEqual(
+            result["compiler_attempts"][0]["reason"],
+            "campaign_compiler_contract_violation",
+        )
+        self.assertEqual(result["payload"]["placements"], {"automatic": True})
 
     def test_pending_campaign_proposal_is_scoped_to_destination(self):
         """A proposal for another destination cannot authorize this campaign."""
@@ -857,27 +1037,22 @@ class CampaignContractRegressionTests(unittest.TestCase):
     def test_terra_incomplete_result_reports_only_semantic_missing_facts(self):
         import campaign_payload_compiler as compiler
 
-        class IncompleteProcess:
-            def __init__(self, command, **kwargs):
-                self.command = command
-                self.returncode = 0
-                self.pid = os.getpid()
-
-            def communicate(self, prompt, timeout=None):
-                self.prompt = prompt
-                output_path = Path(self.command[self.command.index("-o") + 1])
-                output_path.write_text(json.dumps({
+        def fake_terra(prompt, schema, **kwargs):
+            return {
+                "ok": True,
+                "model": "gpt-5.6-terra",
+                "compiled": {
                     "ready": False,
                     "missing_fields": ["approved creative asset path"],
                     "payload_json": "{}",
-                }), encoding="utf-8")
-                return "", ""
+                },
+            }
 
         original = {
             "LATEST_BRIEF_FILE": compiler.LATEST_BRIEF_FILE,
             "LATEST_PAYLOAD_FILE": compiler.LATEST_PAYLOAD_FILE,
             "CONTRACT_FILE": compiler.CONTRACT_FILE,
-            "Popen": compiler.subprocess.Popen,
+            "terra": compiler._terra_compile,
         }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -886,7 +1061,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 compiler.LATEST_PAYLOAD_FILE = root / "latest-campaign-payload.json"
                 compiler.CONTRACT_FILE = root / "contract.md"
                 compiler.CONTRACT_FILE.write_text("Never guess campaign values.", encoding="utf-8")
-                compiler.subprocess.Popen = IncompleteProcess
+                compiler._terra_compile = fake_terra
                 result = compiler.compile_campaign_brief(
                     "create_whatsapp_campaign",
                     authoritative_buyer_brief(
@@ -894,7 +1069,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
                         "el texto principal: ‘Reserva tu café hoy.’, el título: ‘Canary Café’ y "
                         "el mensaje inicial: ‘Hola, quiero reservar.’"
                     ),
-                    config=SimpleNamespace(codex_cli="codex", hermes_home=str(root / "hermes")),
+                    config=SimpleNamespace(hermes_home=str(root / "hermes")),
                 )
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["missing_fields"], ["approved creative asset path"])
@@ -902,9 +1077,9 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 compiler.LATEST_BRIEF_FILE = original["LATEST_BRIEF_FILE"]
                 compiler.LATEST_PAYLOAD_FILE = original["LATEST_PAYLOAD_FILE"]
                 compiler.CONTRACT_FILE = original["CONTRACT_FILE"]
-                compiler.subprocess.Popen = original["Popen"]
+                compiler._terra_compile = original["terra"]
 
-    def test_campaign_compiler_prefers_gemini_35(self):
+    def test_campaign_compiler_prefers_gemini_36(self):
         import campaign_payload_compiler as compiler
 
         payload = {
@@ -966,8 +1141,8 @@ class CampaignContractRegressionTests(unittest.TestCase):
                     config=config,
                 )
                 self.assertTrue(result["ok"])
-                self.assertEqual(result["model"], "gemini-3.5-flash")
-                self.assertEqual(calls, ["gemini-3.5-flash"])
+                self.assertEqual(result["model"], "gemini-3.6-flash")
+                self.assertEqual(calls, ["gemini-3.6-flash"])
             finally:
                 compiler.LATEST_BRIEF_FILE = original["LATEST_BRIEF_FILE"]
                 compiler.LATEST_PAYLOAD_FILE = original["LATEST_PAYLOAD_FILE"]
@@ -1050,7 +1225,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["model"], "gpt-5.6-terra")
                 self.assertEqual(calls, [
-                    "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gpt-5.6-terra",
+                    "gemini-3.6-flash", "gemini-3.5-flash", "gpt-5.6-terra",
                 ])
                 self.assertEqual([item["model"] for item in result["compiler_attempts"]], calls)
             finally:
@@ -1112,7 +1287,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["reason"], "campaign_brief_incomplete")
                 self.assertEqual(result["missing_fields"], ["daily_budget", "locations"])
-                self.assertEqual(calls, ["gemini-3.5-flash"])
+                self.assertEqual(calls, ["gemini-3.6-flash"])
             finally:
                 compiler.LATEST_BRIEF_FILE = original["LATEST_BRIEF_FILE"]
                 compiler.LATEST_PAYLOAD_FILE = original["LATEST_PAYLOAD_FILE"]

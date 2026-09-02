@@ -1638,6 +1638,7 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
                         "primary_text_approval": "la aprobación del texto principal del anuncio",
                         "headline_approval": "la aprobación del título del anuncio",
                         "prefilled_message_approval": "la aprobación del mensaje inicial de WhatsApp",
+                        "placements": "la estrategia de ubicaciones del anuncio",
                     }
                     detail = ", ".join(labels.get(str(value), str(value)) for value in missing) or "datos de campaña"
                     reply = f"No se creó nada en Meta: el briefing aún necesita confirmar {detail}."
