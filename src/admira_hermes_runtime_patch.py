@@ -4977,6 +4977,39 @@ def _guard_authoritative_image_outcome(response):
     except (TypeError, ValueError):
         evidence = str(sources)
     lowered = evidence.lower()
+
+    # An inbound upload lives under the Hermes workspace, not under an
+    # authoritative generated-media root.  If the model nevertheless emits
+    # it as a native MEDIA directive, Telegram would receive a false delivery
+    # after the tenant-side path filter drops the attachment.  Keep this
+    # narrow: only a malformed MEDIA directive triggers the claim guard, and
+    # a verified path from Image or list_recent_creatives remains deliverable.
+    media_matches = list(ADMIRA_MEDIA_TAG_RE.finditer(str(response.get("final_response") or "")))
+    if media_matches:
+        verified_paths = []
+        for source in _current_generated_media_sources(response):
+            _collect_generated_media_paths(source, paths=verified_paths)
+        invalid_media = any(
+            not _safe_generated_media_path(match.group("path"))
+            for match in media_matches
+        )
+        if invalid_media:
+            final_response = str(response.get("final_response") or "")
+
+            def remove_invalid_media(match):
+                return match.group(0) if _safe_generated_media_path(match.group("path")) else ""
+
+            cleaned = ADMIRA_MEDIA_TAG_RE.sub(remove_invalid_media, final_response)
+            cleaned = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", cleaned).strip()
+            if not verified_paths:
+                language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es").lower()
+                response["final_response"] = (
+                    "I could not verify an image generated or retrieved in this turn, so I will not report it as delivered."
+                    if language.startswith("en")
+                    else "No pude verificar una imagen generada o recuperada en este turno, así que no la reportaré como entregada."
+                )
+            else:
+                response["final_response"] = cleaned
     if "codex_image_generate" not in lowered:
         return response
     blocked = any(marker in lowered for marker in ('"blocked": true', '"blocked":true', '"executed": false', '"executed":false'))

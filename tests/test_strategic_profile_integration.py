@@ -78,7 +78,7 @@ class FakeDashboard:
     def read_json(self, _path, default):
         return self.pending if self.pending else default
 
-    def strategic_product_action_eligibility(self, category):
+    def strategic_product_action_eligibility(self, category, payload=None):
         return action_eligibility(
             self.profile,
             active_page_id=self.page_id,
@@ -256,6 +256,32 @@ class StrategicProfileToolBridgeIntegrationTests(unittest.TestCase):
     def _call(self, tool, arguments):
         with patch.object(admira_tool_bridge, "load_dashboard", return_value=self.dashboard):
             return admira_tool_bridge.call_tool(tool, arguments)
+
+    def test_creative_request_evidence_reaches_first_gate_and_provider(self):
+        arguments = {
+            "request": "Diseño promocional con mi foto real y acentos azulados",
+            "purpose": "ad_creative",
+            "include_logo": False,
+            "content_asset_ids": ["photo-1"],
+            "real_media": [{"content_asset_id": "photo-1", "role": "hero"}],
+        }
+
+        class RequestAwareDashboard(FakeDashboard):
+            def strategic_product_action_eligibility(self, category, payload=None):
+                return {
+                    "allowed": category == "paid_creative" and payload == arguments,
+                    "code": "branding_required",
+                    "unresolved_topics": ["logo_decision", "reference_decision"],
+                }
+
+        self.dashboard = RequestAwareDashboard(reviewed_profile())
+        result = self._call("mcp_admira_codex_image_generate", arguments)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(self.dashboard.executions), 1)
+        self.assertEqual(self.dashboard.executions[0][0], {
+            "tool": "codex_image_generate", "arguments": arguments,
+        })
 
     def test_mutations_are_blocked_before_compiler_or_product_provider(self):
         creator_args = {

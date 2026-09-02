@@ -453,7 +453,9 @@ def strategic_profile_gate_result(tool, args, dashboard):
             "reason": "strategic_profile_gate_unavailable",
             "reply": "No ejecuté la acción porque no pude verificar el perfil estratégico del negocio.",
         }
-    decision = checker(category)
+    # Preserve the model's structured creative choices at this first gate,
+    # just as execute_agent_tool does at the downstream dashboard gate.
+    decision = checker(category, payload=dict(args or {}))
     if decision.get("allowed"):
         return None
     missing = list(decision.get("unresolved_topics") or [])

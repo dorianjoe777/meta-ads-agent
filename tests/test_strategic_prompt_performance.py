@@ -677,6 +677,44 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
         self.assertIn("Primero necesito", guarded["final_response"])
         self.assertNotIn("MEDIA:", guarded["final_response"])
 
+    def test_input_upload_media_without_image_evidence_cannot_be_delivered(self):
+        response = {
+            "final_response": "MEDIA:/app/dashboard/data/hermes-workspace/current/uploads/source.jpg\nAquí tienes tu imagen promocional lista.",
+            "messages": [{"role": "user", "content": "trabajar sin logo explicitamente"}],
+            runtime.ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY: [{
+                "name": "mcp_admira_save_brand_memory",
+                "content": json.dumps({"ok": True, "saved": True}),
+            }],
+        }
+        guarded = runtime._apply_authoritative_tool_result_guards(response)
+        self.assertNotIn("MEDIA:", guarded["final_response"])
+        self.assertIn("No pude verificar", guarded["final_response"])
+        self.assertNotIn("Aquí tienes", guarded["final_response"])
+
+    def test_recent_creative_evidence_preserves_real_delivery_and_drops_input_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            output.mkdir()
+            recent = output / "existing-creative.jpg"
+            recent.write_bytes(b"creative")
+            response = {
+                "final_response": "MEDIA:/app/dashboard/data/hermes-workspace/current/uploads/source.jpg\nAquí está la creatividad existente.",
+                "messages": [
+                    {"role": "user", "content": "reenvía la creatividad existente"},
+                    {"role": "tool", "name": "mcp_admira_list_recent_creatives", "content": json.dumps({
+                        "ok": True,
+                        "tool": "admira_list_recent_creatives",
+                        "result": {"ok": True, "items": [{"file_path": str(recent)}]},
+                    })},
+                ],
+            }
+            with patch.object(runtime, "_admira_generated_media_roots", return_value=[output.resolve()]):
+                guarded = runtime._apply_authoritative_tool_result_guards(response)
+                delivered = runtime._append_generated_media_attachments(guarded)
+        self.assertNotIn("/app/dashboard/data/hermes-workspace/current/uploads/source.jpg", delivered["final_response"])
+        self.assertIn(f"MEDIA:{recent.resolve()}", delivered["final_response"])
+        self.assertIn("creatividad existente", delivered["final_response"])
+
     def test_transport_success_does_not_count_as_durable_save(self):
         response = {
             "final_response": "Ya lo guardé.",
