@@ -236,10 +236,12 @@ quota or image-limit failure. The failed account enters its per-account
 cooldown, and no further attempt is made against it during that cooldown.
 Tenants remain pinned to `admira-ia:r90` while this central canary is pending.
 
-The shared image adapter uses Hermes' native `openai-codex` image provider,
+The shared image route uses Hermes' native `openai-codex` image provider,
 not `codex exec`. A private Python child selects exactly one account home and
-attaches broker-owned reference snapshots as Responses `input_image` parts.
-It never falls back to CLI or a tenant/global account. Native provider limits
+uses the same direct-provider contract as r99; it only mirrors that slot's
+OAuth session into Hermes before and after the provider call. Buyer-owned real
+photos and official logos stay out of the provider and are composed locally by
+the hybrid creative flow. It never falls back to CLI or a tenant/global account. Native provider limits
 are reported as safe categories; a generic 429 does not establish which
 subscription allowance was exhausted. The account lock covers OAuth refresh
 and generation, including mirroring a refreshed session before a long request.

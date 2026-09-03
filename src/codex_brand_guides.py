@@ -2266,6 +2266,15 @@ def respond(payload):
 
 try:
     payload = json.loads(sys.stdin.read() or "{}")
+    # A hosted pool slot keeps the canonical Codex OAuth session in its private
+    # auth.json.  Mirror it into Hermes' provider namespace before using the
+    # normal r99 image provider, then mirror a refresh back afterwards.  This
+    # changes only credential storage; it deliberately does not monkey-patch
+    # the provider, attach buyer media, or start Codex CLI.
+    pool_auth_path = None
+    if payload.get("pool_oauth") is True:
+        from codex_oauth_session import prepare_hermes_oauth
+        pool_auth_path = prepare_hermes_oauth()
     from hermes_cli.plugins import _ensure_plugins_discovered
 
     _ensure_plugins_discovered(force=True)
@@ -2304,11 +2313,7 @@ try:
         "aspect_ratio": payload.get("aspect_ratio") or "1:1",
     }
     used_reference_arg = ""
-    if payload.get("pool_native") is True:
-        from codex_native_image_adapter import generate_pool_image
-        result = generate_pool_image(provider, reference_paths=reference_paths, **base_kwargs)
-        used_reference_arg = "input_image" if reference_paths else ""
-    elif reference_paths:
+    if reference_paths:
         try:
             signature = inspect.signature(provider.generate)
             params = signature.parameters
@@ -2350,6 +2355,9 @@ try:
             raise SystemExit(0)
     else:
         result = provider.generate(**base_kwargs)
+    if pool_auth_path:
+        from codex_oauth_session import mirror_back_to_root
+        mirror_back_to_root(pool_auth_path)
     if isinstance(result, dict):
         result.setdefault("reference_image_count", len(reference_paths))
         result.setdefault("reference_image_arg", used_reference_arg)
@@ -2359,6 +2367,12 @@ try:
         "error_type": "provider_contract",
     })
 except Exception as exc:
+    try:
+        if "pool_auth_path" in locals() and pool_auth_path:
+            from codex_oauth_session import mirror_back_to_root
+            mirror_back_to_root(pool_auth_path)
+    except Exception:
+        pass
     respond({
         "success": False,
         "error": str(exc),
@@ -2377,7 +2391,7 @@ def run_hermes_image_bridge(payload, timeout=540, config=None, image_model="", c
         home = str(Path(codex_home).expanduser().resolve())
         env["HERMES_HOME"] = home
         env["CODEX_HOME"] = home
-        payload = dict(payload, pool_native=True)
+        payload = dict(payload, pool_oauth=True)
     command = [python, "-c", HERMES_IMAGE_BRIDGE_SCRIPT]
     try:
         completed = subprocess.run(
@@ -2416,7 +2430,14 @@ def run_hermes_image_bridge(payload, timeout=540, config=None, image_model="", c
 def call_codex_image_native(prompt, timeout=270, model=None, output_root=None,
                             output_name="creative", reference_image_paths=None,
                             purpose="ad_creative", codex_home=None):
-    """Generate for a central pool slot via Hermes images, never Codex CLI."""
+    """Generate through r99's native Hermes image provider for one pool slot.
+
+    The selected slot is authenticated through Hermes' normal ``openai-codex``
+    OAuth provider.  It never invokes ``codex exec`` and it does not alter the
+    provider's Responses payload.  Protected real photos are handled by the
+    hybrid compositor before this boundary; any optional reference here is a
+    separately approved style asset.
+    """
     request = str(prompt or "").strip()
     if not request or codex_home is None:
         return {"ok": False, "failure_category": "provider_failed"}

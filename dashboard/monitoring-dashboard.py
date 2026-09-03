@@ -13867,6 +13867,84 @@ def _hybrid_real_media(payload, purpose="ad_creative", turn_capability=None):
     return slots, by_id
 
 
+def _recover_implicit_hybrid_real_media(payload, purpose="ad_creative"):
+    """Recover an unambiguous protected-photo selection into ``real_media``.
+
+    Hermes remains responsible for understanding the buyer's request.  This is
+    not a keyword route and it never searches for a recent asset: it only
+    preserves an image the tool call already selected by asset ID or exact
+    library path.  When that selection is a classified pixel-locked buyer
+    photo approved for this purpose (or covered by the current-turn receipt),
+    using the hybrid compositor is the only truthful way to keep it exact.
+    """
+    if not isinstance(payload, dict) or payload.get("real_media"):
+        return payload, []
+    purpose = str(purpose or "ad_creative").strip().lower()
+    if purpose in BRAND_EXPLORATION_PURPOSES or image_purpose_is_motion(purpose):
+        return payload, []
+    library = load_content_asset_library()
+    items = [item for item in (library.get("items") or []) if isinstance(item, dict)]
+    by_id = {str(item.get("id") or ""): item for item in items if str(item.get("id") or "")}
+    path_to_id = {}
+    for asset_id, item in by_id.items():
+        for path in safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=8):
+            try:
+                path_to_id.setdefault(str(Path(path).resolve()), asset_id)
+            except (OSError, RuntimeError, ValueError):
+                continue
+    selected_ids = []
+    for asset_id in request_scoped_content_asset_ids(payload):
+        if asset_id in by_id and asset_id not in selected_ids:
+            selected_ids.append(asset_id)
+    reference_paths = safe_image_paths(payload, limit=8)
+    for path in reference_paths:
+        try:
+            asset_id = path_to_id.get(str(Path(path).resolve()))
+        except (OSError, RuntimeError, ValueError):
+            asset_id = None
+        if asset_id and asset_id not in selected_ids:
+            selected_ids.append(asset_id)
+    selected_ids = [
+        asset_id for asset_id in selected_ids
+        if (by_id[asset_id].get("classification_status") == "classified"
+            and by_id[asset_id].get("preservation_mode") == "pixel_locked"
+            and by_id[asset_id].get("category") != "do_not_use")
+    ]
+    if not 1 <= len(selected_ids) <= 6:
+        return payload, []
+    organic = image_purpose_is_organic(purpose)
+    approval_field = "approved_for_daily_content" if organic else "approved_for_ads"
+    receipt = _hybrid_turn_asset_capability_for_ids(selected_ids)
+    receipt_ids = set(receipt.get("asset_ids") or []) if isinstance(receipt, dict) and not organic else set()
+    if any(not by_id[asset_id].get(approval_field) and asset_id not in receipt_ids for asset_id in selected_ids):
+        return payload, []
+    normalized = dict(payload)
+    normalized["real_media"] = [
+        {
+            "slot_id": "hero" if len(selected_ids) == 1 else f"slot-{index}",
+            "content_asset_id": asset_id,
+            # Do not invent before/after semantics.  The existing layout
+            # resolver chooses hero, services, or collage from this shape.
+            "role": "hero" if len(selected_ids) == 1 else "supporting",
+        }
+        for index, asset_id in enumerate(selected_ids, 1)
+    ]
+    selected_paths = {
+        path
+        for asset_id in selected_ids
+        for path in safe_image_paths({"image_paths": by_id[asset_id].get("file_paths") or []}, limit=8)
+    }
+    raw_references = payload.get("reference_image_paths")
+    if isinstance(raw_references, str):
+        raw_references = [raw_references]
+    if isinstance(raw_references, (list, tuple)):
+        normalized["reference_image_paths"] = [
+            str(path) for path in raw_references
+            if str(path).strip() and str(path) not in selected_paths
+        ]
+    return normalized, selected_ids
+
+
 def _hybrid_style_reference(payload, by_id, purpose="ad_creative"):
     policy = payload.get("style_reference")
     if not isinstance(policy, dict):
@@ -13940,7 +14018,9 @@ def _hybrid_public_evidence(slots, composition):
 
 def codex_image_generate(payload):
     """Generate a raster creative through the Codex/Image bridge."""
-    payload = payload or {}
+    payload = dict(payload or {})
+    initial_purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
+    payload, implicit_hybrid_asset_ids = _recover_implicit_hybrid_real_media(payload, purpose=initial_purpose)
     brief_payload = normalize_ad_brief_payload(payload)
     ad_brief = str(payload.get("ad_brief") or "").strip()
     mode = str(payload.get("mode") or payload.get("image_mode") or "fixed").strip().lower()
@@ -14122,7 +14202,7 @@ def codex_image_generate(payload):
                     composition_evidence["output_sha256"] = content_asset_sha256(final_path)
                     result["output_sha256"] = composition_evidence["output_sha256"]
                 result["preview_url"] = f"/api/creative-asset?id={urllib.parse.quote(result['asset_id'])}"
-            result["prompt_package"] = {"hybrid": True, "layout_intent": layout, "real_media_count": len(slots), "style_reference": style_evidence, "reference_image_count": len(hybrid_refs), "provider_reference_count": len(hybrid_refs), "real_media_provider_excluded": True, "official_logo_provider_excluded": True}
+            result["prompt_package"] = {"hybrid": True, "layout_intent": layout, "real_media_count": len(slots), "style_reference": style_evidence, "reference_image_count": len(hybrid_refs), "provider_reference_count": len(hybrid_refs), "real_media_provider_excluded": True, "official_logo_provider_excluded": True, "implicit_real_media_recovered": bool(implicit_hybrid_asset_ids)}
             if result.get("ok") and result.get("image_path") and _truthy_payload_value(payload, "reusable_asset", False):
                 reusable = save_content_asset_memory({"file_path": result["image_path"], "category": str(payload.get("reusable_category") or "brand_graphic_element"), "purpose": str(payload.get("asset_purpose") or request)[:1200], "notes": "Composición híbrida con fotos reales insertadas programáticamente.", "preservation_mode": "pixel_locked", "source": "codex_hybrid_composite", "approved_for_ads": bool(payload.get("approved_for_ads"))})
                 result["reusable_content_asset"] = reusable.get("asset")

@@ -248,18 +248,19 @@ class HybridTurnAssetCapabilityTests(unittest.TestCase):
             for item in reversed(common):
                 item.stop()
 
-    def test_same_turn_ordinary_fallback_is_rejected_without_calling_provider(self):
+    def test_same_turn_explicit_pixel_locked_asset_is_promoted_to_hybrid(self):
         dashboard._record_hybrid_turn_asset_capability(["asset-hero"])
-        with patch.object(dashboard, "call_codex_image_cli") as provider:
-            result = dashboard.codex_image_generate({
-                "request": "Crear diseño usando la foto real",
-                "purpose": "ad_creative",
-                "content_asset_ids": ["asset-hero"],
-                "reference_image_paths": [str(self.asset_path)],
-            })
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["reason"], "hybrid_required")
-        provider.assert_not_called()
+        normalized, asset_ids = dashboard._recover_implicit_hybrid_real_media({
+            "request": "Crear diseño usando la foto real",
+            "purpose": "ad_creative",
+            "content_asset_ids": ["asset-hero"],
+            "reference_image_paths": [str(self.asset_path)],
+        }, purpose="ad_creative")
+        self.assertEqual(asset_ids, ["asset-hero"])
+        self.assertEqual(normalized["reference_image_paths"], [])
+        self.assertEqual(normalized["real_media"], [{
+            "slot_id": "hero", "content_asset_id": "asset-hero", "role": "hero",
+        }])
 
     def test_other_turn_ordinary_request_remains_compatible(self):
         dashboard._record_hybrid_turn_asset_capability(["asset-hero"])
