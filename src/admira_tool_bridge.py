@@ -387,6 +387,7 @@ def compact_agent_tool_result(tool, result):
             for key in (
                 "ok", "blocked", "reason", "error", "asset_id", "image_path", "video_path",
                 "preview_url", "format", "width", "height", "duration_seconds", "stdout",
+                "retry_contract", "retry_instruction",
             )
             if nested.get(key) not in (None, "", [], {})
         }

@@ -68,7 +68,7 @@ FORMAT
 [1:1 | 4:5 | 9:16 | OTHER_CONFIRMED_FORMAT]
 
 STYLE REFERENCE
-[none by default | pool only when explicitly requested | explicit selected reference]
+[automatic persistent brand references | explicit one-task reference plus brand references | none only when explicitly suppressed]
 
 VARIATION FREEDOM
 Preserve facts, copy constraints, branding, and slot order. Create a fresh solution by varying composition, hierarchy, framing, card geometry, negative space, typography arrangement, accents, and CTA treatment.
@@ -152,8 +152,10 @@ Do not randomly change brand colors, facts, offers, photo roles, or required cop
 
 ## References, real photos, and logo
 
-- `style_reference.mode` is `none` unless the buyer naturally asked to use saved design references.
-- `pool` selects one eligible graphic-design reference through the shuffle pool; `explicit` uses the named reference.
+- Omit `style_reference` to attach all approved persistent brand references automatically.
+- `explicit` adds the named one-task reference while retaining persistent brand references; `none` suppresses all references only when the buyer explicitly requests it. `pool` is a compatibility alias for the full persistent brand set.
+- Style references guide visual language but never override confirmed branding or exact current-offer facts, and their own logo, photos, name, phone, price, promotion, and text must not be copied.
+- A retry keeps the exact layout and every ordered real-media slot from the original call or returned `retry_contract`; generation failure is not permission to drop an asset.
 - A real photo or logo is never a style reference.
 - Real photos remain pixel-locked and never enter Image 2 in hybrid mode.
 - Image 2 must omit the logo. The backend inserts the saved official logo in its requested deterministic color/position variant.

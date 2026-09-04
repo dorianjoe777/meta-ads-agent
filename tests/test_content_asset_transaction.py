@@ -23,6 +23,77 @@ else:
 
 
 class ContentAssetTransactionTests(unittest.TestCase):
+    def test_style_reference_defaults_to_task_and_requires_explicit_brand_scope_for_reuse(self):
+        if Image is None:
+            self.skipTest("Pillow is supplied by the image runtime, not the minimal host test interpreter")
+        with tempfile.TemporaryDirectory(dir=ROOT / "output") as temp:
+            root = Path(temp)
+            source = root / "reference.png"
+            Image.new("RGB", (32, 20), (20, 80, 150)).save(source)
+            library_file = root / "library.json"
+            library_file.write_text(json.dumps({"items": []}), encoding="utf-8")
+            with patch.object(dashboard, "CONTENT_ASSET_LIBRARY_FILE", library_file), \
+                 patch.object(dashboard, "CONTENT_ASSET_FILES_DIR", root / "stored"), \
+                 patch.object(dashboard, "write_agent_onboarding_plan", lambda: None):
+                task_result = dashboard.save_content_asset_memory({
+                    "file_path": str(source),
+                    "category": "style_reference",
+                    "purpose": "solo para este diseño",
+                    "preservation_mode": "style_only",
+                    "approved_for_ads": True,
+                    "reusable": True,
+                })
+                self.assertEqual(task_result["asset"]["reference_scope"], "task")
+                self.assertFalse(task_result["asset"]["reusable"])
+
+                brand_result = dashboard.save_content_asset_memory({
+                    "file_path": str(source),
+                    "category": "style_reference",
+                    "purpose": "referencia aprobada durante branding",
+                    "preservation_mode": "style_only",
+                    "reference_scope": "brand",
+                })
+                attempted_downgrade = dashboard.save_content_asset_memory({
+                    "file_path": str(source),
+                    "category": "style_reference",
+                    "purpose": "una tarea posterior no debe degradar branding",
+                    "preservation_mode": "style_only",
+                    "reference_scope": "task",
+                })
+            self.assertEqual(brand_result["asset_id"], task_result["asset_id"])
+            self.assertEqual(brand_result["asset"]["reference_scope"], "brand")
+            self.assertTrue(brand_result["asset"]["reusable"])
+            self.assertTrue(brand_result["asset"]["approved_for_ads"])
+            self.assertTrue(brand_result["asset"]["approved_for_daily_content"])
+            self.assertEqual(attempted_downgrade["asset"]["reference_scope"], "brand")
+            self.assertTrue(attempted_downgrade["asset"]["reusable"])
+
+    def test_legacy_style_reference_migrates_to_safe_task_scope(self):
+        if Image is None:
+            self.skipTest("Pillow is supplied by the image runtime, not the minimal host test interpreter")
+        with tempfile.TemporaryDirectory(dir=ROOT / "output") as temp:
+            root = Path(temp)
+            stored = root / "stored"
+            stored.mkdir()
+            source = stored / "legacy.png"
+            Image.new("RGB", (32, 20), (20, 80, 150)).save(source)
+            library_file = root / "library.json"
+            library_file.write_text(json.dumps({"items": [{
+                "id": "legacy-style",
+                "category": "style_reference",
+                "preservation_mode": "style_only",
+                "classification_status": "classified",
+                "approved_for_ads": True,
+                "approved_for_daily_content": True,
+                "reusable": True,
+                "file_paths": [str(source)],
+            }]}), encoding="utf-8")
+            with patch.object(dashboard, "CONTENT_ASSET_LIBRARY_FILE", library_file), \
+                 patch.object(dashboard, "CONTENT_ASSET_FILES_DIR", stored):
+                library = dashboard.load_content_asset_library()
+            self.assertEqual(library["items"][0]["reference_scope"], "task")
+            self.assertFalse(library["items"][0]["reusable"])
+
     def test_save_returns_public_ids_and_resolves_transient_path(self):
         if Image is None:
             self.skipTest("Pillow is supplied by the image runtime, not the minimal host test interpreter")

@@ -22,7 +22,7 @@ The natural-language manager supplies a self-contained visual direction and an o
     {"slot_id": "after", "asset_id": "asset-2", "label": "DESPUÉS", "role": "after"}
   ],
   "logo_color_mode": "original|white|black|brand_primary|brand_secondary|auto_contrast",
-  "style_reference": {"mode": "none"}
+  "style_reference": {"mode": "explicit", "asset_id": "one-off-style-reference"}
 }
 ```
 
@@ -64,6 +64,8 @@ After Image 2 returns the overlay:
 
 If a model accidentally falls back to ordinary generation with the exact IDs from the current same-turn receipt, the backend returns `hybrid_required` without invoking Image 2. Retry the same request with `real_media`. This narrow compatibility behavior does not affect durable approved assets or ordinary requests from another turn.
 
+Any hybrid error receipt may include a `retry_contract`. Preserve its `layout_intent`, every ordered `real_media` item and the same style-reference policy exactly. Never remove photos, change roles, or collapse a collage/services request into a hero just because the first overlay failed. Only a later explicit buyer correction may change that semantic contract.
+
 ## References
 
-By default pass `style_reference: {"mode": "none"}`. Only when the buyer explicitly asks to use saved graphic-design references, pass `{"mode": "pool"}` and select one eligible `style_reference` from the shuffle pool without immediate repetition. An explicitly named reference uses `{"mode": "explicit", "asset_id": "..."}` and wins over the pool. Real photos and official logos are never eligible style references.
+Omit `style_reference` by default: the backend then attaches every approved `reference_scope: "brand"` reference saved during branding. A reference supplied only for the current creative is saved with `reference_scope: "task"` and selected using `{"mode": "explicit", "asset_id": "..."}`; it is attached together with persistent brand references and does not mutate them. Use `{"mode": "none"}` only when the buyer explicitly asks to suppress references for one generation. `pool` is a compatibility alias for the complete persistent brand set, not a shuffle. Real photos and official logos are never eligible style references. References guide visual language only; confirmed branding and exact offer facts always take precedence.

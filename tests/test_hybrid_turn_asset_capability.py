@@ -25,6 +25,7 @@ class HybridTurnAssetCapabilityTests(unittest.TestCase):
         self.library_file = self.root / "content_asset_library.json"
         self.capability_file = self.root / "hybrid_turn_asset_capability.json"
         self.capability_lock = self.root / "hybrid_turn_asset_capability.lock"
+        self.retry_contract_file = self.root / "hybrid_retry_contract.json"
         self.context_file = self.root / "CURRENT_CONTEXT.json"
         self.turn = {
             "chat_id": "-1001",
@@ -45,6 +46,7 @@ class HybridTurnAssetCapabilityTests(unittest.TestCase):
         self.patches = [
             patch.object(dashboard, "HYBRID_TURN_ASSET_CAPABILITY_FILE", self.capability_file),
             patch.object(dashboard, "HYBRID_TURN_ASSET_CAPABILITY_LOCK_FILE", self.capability_lock),
+            patch.object(dashboard, "HYBRID_RETRY_CONTRACT_FILE", self.retry_contract_file),
             patch.object(dashboard, "CONTENT_ASSET_LIBRARY_FILE", self.library_file),
             patch.object(dashboard, "HERMES_CURRENT_CONTEXT_FILE", self.context_file),
             patch.object(dashboard, "_trusted_buyer_turn", lambda max_age_seconds=300: dict(self.turn)),
@@ -261,6 +263,97 @@ class HybridTurnAssetCapabilityTests(unittest.TestCase):
         self.assertEqual(normalized["real_media"], [{
             "slot_id": "hero", "content_asset_id": "asset-hero", "role": "hero",
         }])
+
+    def test_same_turn_retry_contract_rejects_dropped_slots_before_provider(self):
+        turn = dict(self.turn)
+        contract = {
+            "layout_intent": "collage",
+            "real_media": [
+                {"slot_id": "one", "content_asset_id": "asset-one", "role": "collage_item", "label": "One"},
+                {"slot_id": "two", "content_asset_id": "asset-two", "role": "collage_item", "label": "Two"},
+                {"slot_id": "three", "content_asset_id": "asset-three", "role": "collage_item", "label": "Three"},
+            ],
+            "style_reference": {"mode": "explicit", "asset_id": "style-task"},
+            "style_reference_asset_ids": ["style-task", "style-brand"],
+            "all_real_media_required": True,
+            "creative_facts": {
+                "request": "Tres platos, bebidas 2x1, teléfono 0987966452",
+                "purpose": "ad_creative",
+                "text_content": {"promotion": "Bebidas 2x1", "phone": "0987966452"},
+            },
+        }
+        self.assertTrue(dashboard._record_hybrid_retry_contract(contract, turn=turn))
+        exact_payload = {
+            **contract["creative_facts"],
+            "layout_intent": "collage",
+            "real_media": list(contract["real_media"]),
+            "style_reference": {"mode": "explicit", "asset_id": "style-task"},
+        }
+        normalized, block = dashboard._enforce_hybrid_retry_contract(exact_payload, turn=turn)
+        self.assertIsNone(block)
+        self.assertEqual(normalized["_required_style_reference_asset_ids"], ["style-task", "style-brand"])
+
+        degraded = dict(exact_payload)
+        degraded["layout_intent"] = "hero"
+        degraded["real_media"] = [contract["real_media"][0]]
+        with patch.object(dashboard, "call_codex_image_cli") as provider:
+            block = dashboard.codex_image_generate(degraded)
+        provider.assert_not_called()
+        self.assertEqual(block["reason"], "hybrid_retry_contract_mismatch")
+        self.assertEqual(len(block["retry_contract"]["real_media"]), 3)
+
+    def test_explicit_retry_in_later_turn_hydrates_original_contract(self):
+        original_turn = dict(
+            self.turn,
+            message="Tres platos, bebidas 2x1 y el teléfono 0987966452",
+        )
+        contract = {
+            "layout_intent": "collage",
+            "real_media": [
+                {"slot_id": "one", "content_asset_id": "asset-one", "role": "collage_item", "label": "One"},
+                {"slot_id": "two", "content_asset_id": "asset-two", "role": "collage_item", "label": "Two"},
+                {"slot_id": "three", "content_asset_id": "asset-three", "role": "collage_item", "label": "Three"},
+            ],
+            "style_reference": {"mode": "explicit", "asset_id": "style-task"},
+            "style_reference_asset_ids": ["style-task"],
+            "creative_facts": {
+                "request": "Tres platos, bebidas 2x1 y el teléfono 0987966452",
+                "purpose": "ad_creative",
+                "text_content": {"promotion": "Bebidas 2x1", "phone": "0987966452"},
+            },
+        }
+        self.assertTrue(dashboard._record_hybrid_retry_contract(contract, turn=original_turn))
+        later_turn = dict(
+            original_turn,
+            message_sequence=8,
+            message_hash="hash-b",
+            message="Reintenta el diseño, usa exactamente lo mismo",
+        )
+        normalized, block = dashboard._enforce_hybrid_retry_contract(
+            {"request": "Reintenta el diseño", "purpose": "ad_creative"},
+            turn=later_turn,
+        )
+        self.assertIsNone(block)
+        self.assertEqual(normalized["layout_intent"], "collage")
+        self.assertEqual(normalized["real_media"], contract["real_media"])
+        self.assertEqual(normalized["style_reference"], contract["style_reference"])
+        self.assertEqual(normalized["text_content"], contract["creative_facts"]["text_content"])
+        self.assertEqual(normalized["request"], contract["creative_facts"]["request"])
+        self.assertEqual(normalized["_required_style_reference_asset_ids"], ["style-task"])
+        self.assertTrue(dashboard._clear_hybrid_retry_contract(turn=later_turn))
+        self.assertFalse(self.retry_contract_file.exists() and json.loads(self.retry_contract_file.read_text(encoding="utf-8")).get("contracts"))
+
+    def test_retry_contract_keeps_separate_chat_scopes(self):
+        turn_a = dict(self.turn, chat_id="-1001", session_id="session-a", message="primer pedido")
+        turn_b = dict(self.turn, chat_id="-1002", session_id="session-b", message="segundo pedido")
+        contract_a = {"layout_intent": "hero", "real_media": [], "style_reference": {"mode": "none"}}
+        contract_b = {"layout_intent": "collage", "real_media": [], "style_reference": {"mode": "none"}}
+        self.assertTrue(dashboard._record_hybrid_retry_contract(contract_a, turn=turn_a))
+        self.assertTrue(dashboard._record_hybrid_retry_contract(contract_b, turn=turn_b))
+        stored = json.loads(self.retry_contract_file.read_text(encoding="utf-8"))
+        self.assertEqual(len(stored["contracts"]), 2)
+        self.assertEqual(dashboard._hybrid_retry_contract_state(turn=turn_a)["contract"], contract_a)
+        self.assertEqual(dashboard._hybrid_retry_contract_state(turn=turn_b)["contract"], contract_b)
 
     def test_other_turn_ordinary_request_remains_compatible(self):
         dashboard._record_hybrid_turn_asset_capability(["asset-hero"])

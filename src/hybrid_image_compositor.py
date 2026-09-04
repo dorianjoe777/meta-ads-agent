@@ -342,11 +342,10 @@ def build_overlay_prompt(
     """Build a natural-language Image 2 request without imposing a fixed design.
 
     ``layout`` accepts hero, before_after, services, collage, or freeform.
-    Style references are explicitly opt-in; the prompt never asks for them by
-    default. ``none`` uses no reference, ``pool`` asks the application to pass
-    one shuffled approved reference, and ``explicit`` asks it to pass the one
-    design reference selected by the user. Slot colours and labels are exact
-    so the compositor can recover each asset deterministically after generation.
+    ``none`` uses no reference, ``brand``/``pool`` describe the complete
+    persistent brand-reference set, and ``explicit`` adds the one-task design
+    reference selected by the user. Slot colours and labels are exact so the
+    compositor can recover each asset deterministically after generation.
     """
     if layout not in {"hero", "before_after", "services", "collage", "freeform"}:
         raise ValueError("unsupported layout")
@@ -354,8 +353,8 @@ def build_overlay_prompt(
     # three-state contract the canonical API used by the dashboard.
     if use_style_reference_pool is not None:
         style_reference_mode = "pool" if use_style_reference_pool else "none"
-    if style_reference_mode not in {"none", "pool", "explicit"}:
-        raise ValueError("style_reference_mode must be none, pool, or explicit")
+    if style_reference_mode not in {"none", "brand", "pool", "explicit"}:
+        raise ValueError("style_reference_mode must be none, brand, pool, or explicit")
     if not 1 <= len(slots) <= 6:
         raise ValueError("slots must contain between 1 and 6 items")
     lines = [
@@ -417,10 +416,10 @@ def build_overlay_prompt(
         lines.append("Use the single media window as the visual hero. It may be full-bleed, offset, framed, arched, or integrated into an asymmetric editorial composition, while leaving clear hierarchy for the title, supporting message, and CTA.")
     else:
         lines.append("Resolve the freeform layout from the buyer's visual direction while keeping every media slot distinct, legible, and compositionally intentional.")
-    if style_reference_mode == "pool":
-        lines.append("Use exactly one shuffled approved graphic-design reference selected by the application as stylistic inspiration only; never copy its logo or photography.")
+    if style_reference_mode in {"brand", "pool"}:
+        lines.append("Use all attached persistent brand design references as stylistic guidance. They may guide composition, typography energy, palette, rhythm, and graphic treatment, but confirmed brand rules and exact current-offer facts have priority. Never copy reference logos, photography, names, phone numbers, prices, promotions, or text.")
     elif style_reference_mode == "explicit":
-        lines.append("Use the one explicitly selected approved graphic-design reference as stylistic inspiration only; never copy its logo or photography.")
+        lines.append("The first attached design reference is explicit inspiration for this task only; any remaining style references are persistent brand guidance. Merge their visual cues intelligently, but confirmed brand rules and exact current-offer facts always have priority. Never copy reference logos, photography, names, phone numbers, prices, promotions, or text.")
     else:
         lines.append("Do not use any saved style reference; develop the visual direction freely.")
     lines.append("FINAL OUTPUT CHECK: every listed slot must be visibly present as its exact flat key colour. If the creative brief names or describes the protected real subject, represent its intended location only with that keyed slot; never render a substitute subject or a finished photograph there.")

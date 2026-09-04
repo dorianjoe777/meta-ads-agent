@@ -41,7 +41,9 @@ Ask if the buyer has real photos/videos that should be used. If they provide a p
 
 Treat buyer-owned real photos as protected source material, not style inspiration. Save them with `preservation_mode: "pixel_locked"`. When any protected photo is used in Image 2, pass its durable file path in `protected_reference_image_paths` (or select it by `content_asset_ids`) and explicitly require `pixel by pixel accuracy`, `pixel-level accurate reproduction`, and `pixel-faithful` use. Image 2 may crop, scale, position, frame, mask the boundary, or add typography/graphics above or around it, but it must not redraw, regenerate, retouch, relight, recolor, beautify, remove/add objects, change people/products/text, or otherwise alter the photo content that appears in the design.
 
-`style_reference` is different: it may guide composition, colors, typography, or mood and must be saved with `preservation_mode: "style_only"`. Never treat a protected real photo as style-only merely because it is attached alongside design references.
+`style_reference` is different: it may guide composition, colors, typography, or mood and must be saved with `preservation_mode: "style_only"`. Also classify its lifetime. Use `reference_scope: "task"` (the safe default) when the buyer supplies it for one isolated creative; it is selected explicitly for that task and must not alter durable branding. Use `reference_scope: "brand"` only when the buyer supplies or approves it while defining durable branding; those references are automatically attached to every later creative. Never promote a one-off reference to brand scope merely because the model considers it reusable. Never treat a protected real photo as style-only merely because it is attached alongside design references.
+
+A design reference is subordinate to confirmed brand memory and the active offer. It can guide visual language, but it never replaces approved colors, restrictions, exact phone numbers, prices, promotions, copy, or other business facts. Never copy the reference's own logo, photos, business name, phone number, prices, promotion, or wording.
 
 ## Asset library
 
@@ -55,6 +57,8 @@ For a batch, ask that as one grouped question, not once per image. Use these pre
 
 - buyer-owned real photo or official logo: `pixel_locked`;
 - inspiration/design reference: `style_only`;
+- one-off inspiration for the current creative: `style_only` plus `reference_scope: "task"`;
+- durable reference approved during branding: `style_only` plus `reference_scope: "brand"`;
 - not yet understood: `pending_classification` and not approved for reuse;
 - buyer says not to use it: `prohibited`.
 

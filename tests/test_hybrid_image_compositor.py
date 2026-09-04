@@ -77,8 +77,10 @@ class HybridImageCompositorTests(unittest.TestCase):
         self.assertIn("Do not draw a logo", prompt)
 
     def test_prompt_reference_modes_are_explicit(self):
-        self.assertIn("one shuffled approved graphic-design reference", self._prompt("pool"))
-        self.assertIn("one explicitly selected approved graphic-design reference", self._prompt("explicit"))
+        self.assertIn("all attached persistent brand design references", self._prompt("pool"))
+        self.assertIn("first attached design reference is explicit inspiration for this task only", self._prompt("explicit"))
+        self.assertIn("confirmed brand rules and exact current-offer facts always have priority", self._prompt("explicit"))
+        self.assertIn("all attached persistent brand design references", self._prompt("brand"))
         with self.assertRaises(ValueError):
             self._prompt("sometimes")
 

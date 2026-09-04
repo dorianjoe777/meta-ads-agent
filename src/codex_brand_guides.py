@@ -2617,7 +2617,17 @@ def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=Non
             attached = isolated / f"reference-{index}{reference.suffix.lower()}"
             shutil.copy2(reference, attached)
             command.extend(["--image", str(attached)])
-        command.append(codex_image_generation_prompt(request, has_references=bool(safe_references), purpose=purpose))
+        # ``--image`` accepts one or more values.  Without the option
+        # terminator, clap can consume the trailing positional prompt as one
+        # more image path whenever a reference is attached.
+        command.extend([
+            "--",
+            codex_image_generation_prompt(
+                request,
+                has_references=bool(safe_references),
+                purpose=purpose,
+            ),
+        ])
         try:
             process = subprocess.Popen(
                 command,

@@ -29,9 +29,11 @@ class HybridImageDashboardIntegrationTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.photo_a = self.root / "before.png"
         self.photo_b = self.root / "after.png"
+        self.photo_c = self.root / "third.png"
         self.logo = self.root / "logo.png"
         Image.new("RGB", (80, 60), (20, 80, 150)).save(self.photo_a)
         Image.new("RGB", (80, 60), (180, 80, 30)).save(self.photo_b)
+        Image.new("RGB", (80, 60), (30, 150, 80)).save(self.photo_c)
         Image.new("RGBA", (30, 12), (255, 0, 0, 255)).save(self.logo)
         self.overlay = self.root / "overlay.png"
         canvas = Image.new("RGB", (400, 240), "white")
@@ -43,6 +45,7 @@ class HybridImageDashboardIntegrationTests(unittest.TestCase):
             "items": [
                 {"id": "photo-before", "category": "product", "preservation_mode": "pixel_locked", "classification_status": "classified", "approved_for_ads": True, "file_paths": [str(self.photo_a)]},
                 {"id": "photo-after", "category": "product", "preservation_mode": "pixel_locked", "classification_status": "classified", "approved_for_ads": True, "file_paths": [str(self.photo_b)]},
+                {"id": "photo-third", "category": "product", "preservation_mode": "pixel_locked", "classification_status": "classified", "approved_for_ads": True, "file_paths": [str(self.photo_c)]},
                 {"id": "style-1", "category": "style_reference", "preservation_mode": "style_only", "classification_status": "classified", "approved_for_ads": True, "file_paths": [str(self.logo)]},
             ]
         }
@@ -93,24 +96,139 @@ class HybridImageDashboardIntegrationTests(unittest.TestCase):
         self.assertNotIn(str(self.photo_a), json.dumps(result["hybrid"], ensure_ascii=False))
         self.assertNotIn(str(self.photo_b), json.dumps(result["hybrid"], ensure_ascii=False))
 
-    def test_style_pool_is_opt_in_and_rotates_without_immediate_repeat(self):
+    def test_brand_references_are_automatic_and_task_reference_is_added_first(self):
         style_b = self.root / "style-b.png"
+        style_task = self.root / "style-task.png"
         Image.new("RGB", (20, 20), (0, 0, 0)).save(style_b)
-        self.library["items"].append({"id": "style-2", "category": "style_reference", "preservation_mode": "style_only", "classification_status": "classified", "approved_for_ads": True, "file_paths": [str(style_b)]})
-        dashboard.HYBRID_STYLE_SHUFFLE_FILE = self.root / "shuffle.json"
-        first, first_evidence = dashboard._hybrid_style_reference({"style_reference": {"mode": "pool"}}, {item["id"]: item for item in self.library["items"]})
-        second, second_evidence = dashboard._hybrid_style_reference({"style_reference": {"mode": "pool"}}, {item["id"]: item for item in self.library["items"]})
-        self.assertNotEqual(first_evidence["asset_id"], second_evidence["asset_id"])
-        self.assertTrue(first and second)
-        none, evidence = dashboard._hybrid_style_reference({}, {item["id"]: item for item in self.library["items"]})
-        self.assertIsNone(none)
+        Image.new("RGB", (20, 20), (80, 40, 120)).save(style_task)
+        self.library["items"][3]["reference_scope"] = "brand"
+        self.library["items"].append({"id": "style-2", "category": "style_reference", "preservation_mode": "style_only", "classification_status": "classified", "approved_for_ads": True, "reference_scope": "brand", "file_paths": [str(style_b)]})
+        self.library["items"].append({"id": "style-task", "category": "style_reference", "preservation_mode": "style_only", "classification_status": "classified", "approved_for_ads": True, "reference_scope": "task", "file_paths": [str(style_task)]})
+        index = {item["id"]: item for item in self.library["items"]}
+
+        automatic, automatic_evidence = dashboard._creative_style_references({}, index)
+        self.assertEqual(automatic, [str(self.logo), str(style_b)])
+        self.assertEqual(automatic_evidence["mode"], "brand")
+        self.assertEqual(automatic_evidence["brand_asset_ids"], ["style-1", "style-2"])
+
+        explicit, explicit_evidence = dashboard._creative_style_references(
+            {"style_reference": {"mode": "explicit", "asset_id": "style-task"}}, index
+        )
+        self.assertEqual(explicit, [str(style_task), str(self.logo), str(style_b)])
+        self.assertEqual(explicit_evidence["explicit_asset_id"], "style-task")
+
+        legacy_selected, legacy_evidence = dashboard._creative_style_references(
+            {"content_asset_ids": ["style-task"]}, index
+        )
+        self.assertEqual(legacy_selected, explicit)
+        self.assertEqual(legacy_evidence["task_asset_ids"], ["style-task"])
+
+        pooled, pooled_evidence = dashboard._creative_style_references(
+            {"style_reference": {"mode": "pool"}}, index
+        )
+        self.assertEqual(pooled, automatic)
+        self.assertEqual(pooled_evidence["brand_asset_ids"], ["style-1", "style-2"])
+
+        none, evidence = dashboard._creative_style_references(
+            {"style_reference": {"mode": "none"}}, index
+        )
+        self.assertEqual(none, [])
         self.assertEqual(evidence["mode"], "none")
 
-        sequence = []
-        for _ in range(6):
-            _, evidence = dashboard._hybrid_style_reference({"style_reference": {"mode": "pool"}}, {item["id"]: item for item in self.library["items"]})
-            sequence.append(evidence["asset_id"])
-        self.assertTrue(all(left != right for left, right in zip(sequence, sequence[1:])))
+    def test_three_photo_collage_attaches_task_style_reference_and_preserves_every_slot(self):
+        provider_references = []
+        prompts = []
+
+        def provider(prompt, **kwargs):
+            prompts.append(prompt)
+            provider_references.append(list(kwargs.get("reference_image_paths") or []))
+            out = Path(kwargs["output_root"]) / "three-photo-overlay.png"
+            canvas = Image.new("RGB", (600, 300), (18, 24, 36))
+            draw = ImageDraw.Draw(canvas)
+            draw.rectangle((20, 50, 180, 250), fill=(255, 0, 255))
+            draw.rectangle((220, 50, 380, 250), fill=(0, 255, 255))
+            draw.rectangle((420, 50, 580, 250), fill=(255, 255, 0))
+            if len(prompts) == 1:
+                draw.rectangle((8, 8, 48, 38), fill=(255, 0, 255))
+            canvas.save(out)
+            return {"ok": True, "image_path": str(out)}
+
+        payload = {
+            "request": "Collage animado con los tres platos, teléfono 0987966452 y bebidas 2x1",
+            "purpose": "ad_creative",
+            "layout_intent": "collage",
+            "real_media": [
+                {"slot_id": "cangrejada", "content_asset_id": "photo-before", "role": "collage_item", "label": "Cangrejada"},
+                {"slot_id": "encebollado", "content_asset_id": "photo-after", "role": "collage_item", "label": "Encebollado"},
+                {"slot_id": "sopa", "content_asset_id": "photo-third", "role": "collage_item", "label": "Sopa marinera"},
+            ],
+            "style_reference": {"mode": "explicit", "asset_id": "style-1"},
+            "text_content": {"promotion": "Bebidas 2x1", "phone": "0987966452"},
+            "include_logo": False,
+        }
+        with patch.object(dashboard, "load_content_asset_library", return_value=self.library), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("", "test")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "creative_strategy_readiness", return_value={"ready": True}), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "call_codex_image_cli", side_effect=provider):
+            result = dashboard.codex_image_generate(payload)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(provider_references, [[str(self.logo)], [str(self.logo)]])
+        self.assertNotIn(str(self.photo_a), provider_references[0] + provider_references[1])
+        self.assertNotIn(str(self.photo_b), provider_references[0] + provider_references[1])
+        self.assertNotIn(str(self.photo_c), provider_references[0] + provider_references[1])
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("MANDATORY CORRECTION RETRY", prompts[1])
+        self.assertEqual(result["hybrid"]["style_reference"]["explicit_asset_id"], "style-1")
+        self.assertEqual([slot["slot_id"] for slot in result["hybrid"]["slots"]], ["cangrejada", "encebollado", "sopa"])
+        self.assertEqual(result["prompt_package"]["real_media_count"], 3)
+        self.assertIn("cangrejada=#FF00FF", prompts[1])
+        self.assertIn("encebollado=#00FFFF", prompts[1])
+        self.assertIn("sopa=#FFFF00", prompts[1])
+        self.assertIn("first attached design reference is explicit inspiration for this task only", prompts[0])
+        self.assertIn("0987966452", prompts[0])
+        self.assertIn("Bebidas 2x1", prompts[0])
+
+    def test_style_reference_can_never_be_promoted_to_real_background(self):
+        self.library["items"][3]["reference_scope"] = "brand"
+        captured = {}
+        prompt_package = {
+            "mode": "fixed", "purpose": "standalone_asset", "seed": "test",
+            "variation_count": 1, "variation_ledger": [], "product_guide": "",
+            "ad_brief": "", "logo_context": "", "prompts": [{
+                "image_prompt": "ordinary prompt", "variant_id": "ordinary",
+                "design_axis": "", "composition": "", "experiment": "",
+            }],
+        }
+
+        def provider(prompt, **kwargs):
+            captured["prompt"] = prompt
+            captured["references"] = list(kwargs.get("reference_image_paths") or [])
+            out = Path(kwargs["output_root"]) / "style-only-output.png"
+            Image.new("RGB", (120, 120), (18, 24, 36)).save(out)
+            return {"ok": True, "image_path": str(out), "asset_id": "style-only-output.png"}
+
+        with patch.object(dashboard, "load_content_asset_library", return_value=self.library), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("", "test")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "creative_strategy_readiness", return_value={"ready": True}), \
+             patch.object(dashboard, "build_codex_image_prompt_package", return_value=prompt_package), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "call_codex_image_cli", side_effect=provider):
+            result = dashboard.codex_image_generate({
+                "request": "usa esta referencia como fondo visual",
+                "purpose": "standalone_asset",
+                "include_logo": False,
+            })
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(captured["references"], [str(self.logo)])
+        self.assertEqual(result["prompt_package"]["protected_reference_image_count"], 0)
+        self.assertEqual(result["prompt_package"]["reference_image_role"], "reference")
+        self.assertNotIn("MODO FOTO REAL COMO BASE", captured["prompt"])
+        self.assertNotIn("ACTIVOS REALES PROTEGIDOS", captured["prompt"])
 
     def test_failed_hybrid_mask_leaves_no_provider_overlay_or_false_final(self):
         provider_overlay = Path(dashboard.CREATIVE_ASSET_ROOT) / "invalid-provider-overlay.png"
@@ -191,7 +309,7 @@ class HybridImageDashboardIntegrationTests(unittest.TestCase):
             "style_reference": {"mode": "none"}, "include_logo": False,
         }
 
-    def test_extra_component_fails_closed_without_retry(self):
+    def test_extra_component_retries_same_contract_then_fails_closed(self):
         calls = []
 
         def provider(_prompt, **kwargs):
@@ -213,7 +331,9 @@ class HybridImageDashboardIntegrationTests(unittest.TestCase):
             result = dashboard.codex_image_generate(self._hero_payload())
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "hybrid_overlay_invalid")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(result["retry_contract"]["real_media"]), 1)
+        self.assertEqual(result["retry_contract"]["real_media"][0]["content_asset_id"], "photo-before")
         self.assertFalse((self.root / "extra-component.png").exists())
 
     def test_provider_failure_is_not_retried_or_reclassified(self):

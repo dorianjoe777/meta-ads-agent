@@ -94,6 +94,32 @@ class CompactToolReceiptTests(unittest.TestCase):
         self.assertEqual(result["result"]["image_path"], "/app/output/image.png")
         self.assertNotIn("guide_library", result["result"])
 
+    def test_failed_hybrid_media_receipt_preserves_exact_retry_contract(self):
+        retry_contract = {
+            "layout_intent": "collage",
+            "real_media": [
+                {"slot_id": "one", "content_asset_id": "asset-one", "role": "collage_item"},
+                {"slot_id": "two", "content_asset_id": "asset-two", "role": "collage_item"},
+                {"slot_id": "three", "content_asset_id": "asset-three", "role": "collage_item"},
+            ],
+            "style_reference": {"mode": "explicit", "asset_id": "style-task"},
+            "all_real_media_required": True,
+        }
+        result = bridge.compact_agent_tool_result("admira_codex_image_generate", {
+            "type": "codex_image_generate",
+            "result": {
+                "ok": False,
+                "reason": "provider_quota_exhausted",
+                "error": "quota",
+                "retry_contract": retry_contract,
+                "retry_instruction": "preserve every slot",
+                "hybrid": {"large": "x" * 100_000},
+            },
+        })
+        self.assertEqual(result["result"]["retry_contract"], retry_contract)
+        self.assertEqual(result["result"]["retry_instruction"], "preserve every slot")
+        self.assertNotIn("hybrid", result["result"])
+
     def test_campaign_receipt_keeps_real_meta_ids(self):
         result = bridge.compact_agent_tool_result("admira_create_whatsapp_campaign", {
             "type": "create_campaign_stack",

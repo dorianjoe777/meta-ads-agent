@@ -62,14 +62,17 @@ class CodexImageMcpSchemaTests(unittest.TestCase):
         self.assertIn("not a keyword rule", decision)
         self.assertIn("short-lived same-turn capability", decision)
 
-    def test_style_reference_is_opt_in_and_supports_pool_or_explicit(self):
+    def test_style_reference_auto_applies_brand_scope_and_supports_one_task_explicit(self):
         ref = self.schema["properties"]["style_reference"]
         self.assertEqual(ref["properties"]["mode"]["enum"], ["none", "pool", "explicit"])
         self.assertEqual(ref["required"], ["mode"])
         description = ref["description"].lower()
-        self.assertIn("defaults to none", description)
-        self.assertIn("never keyword inference", description)
-        self.assertIn("main model's natural-language understanding", self.description)
+        self.assertIn("when omitted", description)
+        self.assertIn("brand-scoped", description)
+        self.assertIn("task reference", description)
+        save_scope = TOOL_INPUT_SCHEMAS["save_content_asset"]["properties"]["reference_scope"]
+        self.assertEqual(save_scope["enum"], ["task", "brand"])
+        self.assertIn("defaults safely to task", save_scope["description"].lower())
 
     def test_logo_and_brand_keying_controls_are_exposed(self):
         props = self.schema["properties"]

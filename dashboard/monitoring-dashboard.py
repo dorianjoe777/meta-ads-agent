@@ -364,6 +364,8 @@ TRUSTED_BUYER_TURN_FILE = DATA_DIR / "trusted_buyer_turn.json"
 TRUSTED_BUYER_TURN_LOCK_FILE = DATA_DIR / "trusted_buyer_turn.lock"
 HYBRID_TURN_ASSET_CAPABILITY_FILE = DATA_DIR / "hybrid_turn_asset_capability.json"
 HYBRID_TURN_ASSET_CAPABILITY_LOCK_FILE = DATA_DIR / "hybrid_turn_asset_capability.lock"
+HYBRID_RETRY_CONTRACT_FILE = DATA_DIR / "hybrid_retry_contract.json"
+HYBRID_RETRY_CONTRACT_MAX_ENTRIES = 24
 HERMES_CURRENT_CONTEXT_FILE = DATA_DIR / "hermes-workspace" / "current" / "CURRENT_CONTEXT.json"
 STRATEGIC_PLAN_GENERATION_STATE_FILE = DATA_DIR / "strategic_plan_generation.json"
 MEMORY_DRAFTS_FILE = DATA_DIR / "memory_drafts.json"
@@ -3347,6 +3349,7 @@ CONTENT_ASSET_PRESERVATION_MODES = {
     "pending_classification",
     "prohibited",
 }
+STYLE_REFERENCE_SCOPES = {"task", "brand"}
 
 
 def normalize_content_asset_category(value):
@@ -3389,6 +3392,20 @@ def load_content_asset_library():
         if "approved_for_ads" not in item:
             item["approved_for_ads"] = False
             changed = True
+        if category == "style_reference":
+            reference_scope = str(item.get("reference_scope") or "").strip().lower()
+            if reference_scope not in STYLE_REFERENCE_SCOPES:
+                # Legacy style references have no evidence that the buyer
+                # approved them as permanent brand direction.  Migrate them
+                # to the safe one-task scope instead of silently reusing them.
+                reference_scope = "task"
+            if item.get("reference_scope") != reference_scope:
+                item["reference_scope"] = reference_scope
+                changed = True
+            reusable = reference_scope == "brand"
+            if item.get("reusable") is not reusable:
+                item["reusable"] = reusable
+                changed = True
         safe_existing_paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=32)
         durable_records = []
         for path in safe_existing_paths:
@@ -3665,9 +3682,34 @@ def _upsert_content_asset_item(library, *, category, purpose, notes, file_record
     classification_status = str(payload.get("classification_status") or "").strip().lower()
     if not classification_status:
         classification_status = "pending_agent_review" if preservation_mode == "pending_classification" else "classified"
-    approved_daily_default = classification_status == "classified" and preservation_mode not in {"prohibited", "pending_classification"}
+    existing_reference_scope = str((item or {}).get("reference_scope") or "").strip().lower()
+    requested_reference_scope = str(payload.get("reference_scope") or "").strip().lower()
+    reference_scope = ""
+    if category == "style_reference":
+        reference_scope = (
+            "brand"
+            if existing_reference_scope == "brand"
+            else requested_reference_scope
+            if requested_reference_scope in STYLE_REFERENCE_SCOPES
+            else "task"
+        )
+    brand_reference_eligible = bool(
+        reference_scope == "brand"
+        and classification_status == "classified"
+        and preservation_mode == "style_only"
+    )
+    approved_daily_default = (
+        True
+        if brand_reference_eligible
+        else classification_status == "classified" and preservation_mode not in {"prohibited", "pending_classification"}
+    )
     approved_daily = _truthy_payload_value(payload, "approved_for_daily_content", approved_daily_default)
-    approved_ads = _truthy_payload_value(payload, "approved_for_ads", False)
+    approved_ads = _truthy_payload_value(payload, "approved_for_ads", brand_reference_eligible)
+    if category == "style_reference" and not (
+        classification_status == "classified" and preservation_mode == "style_only"
+    ):
+        approved_daily = False
+        approved_ads = False
     now = now_iso()
     if item is None:
         item = {
@@ -3679,23 +3721,28 @@ def _upsert_content_asset_item(library, *, category, purpose, notes, file_record
         # Automatic Telegram ingestion must never downgrade a classification
         # the agent/buyer already confirmed for this exact file.
         return item
-    item.update(
-        {
-            "category": category,
-            "purpose": purpose or str(item.get("purpose") or ""),
-            "notes": notes or str(item.get("notes") or ""),
-            "preservation_mode": preservation_mode,
-            "classification_status": classification_status,
-            "approved_for_daily_content": bool(approved_daily),
-            "approved_for_ads": bool(approved_ads),
-            "source": str(payload.get("source") or item.get("source") or "buyer_shared"),
-            "product_scope": str(payload.get("product_scope") or item.get("product_scope") or "").strip()[:180],
-            "visual_role": str(payload.get("visual_role") or payload.get("asset_role") or item.get("visual_role") or "").strip()[:120],
-            "reusable": _truthy_payload_value(payload, "reusable", bool(item.get("reusable"))),
-            "background_removed": _truthy_payload_value(payload, "background_removed", bool(item.get("background_removed"))),
-            "updated_at": now,
-        }
-    )
+    item_update = {
+        "category": category,
+        "purpose": purpose or str(item.get("purpose") or ""),
+        "notes": notes or str(item.get("notes") or ""),
+        "preservation_mode": preservation_mode,
+        "classification_status": classification_status,
+        "approved_for_daily_content": bool(approved_daily),
+        "approved_for_ads": bool(approved_ads),
+        "source": str(payload.get("source") or item.get("source") or "buyer_shared"),
+        "product_scope": str(payload.get("product_scope") or item.get("product_scope") or "").strip()[:180],
+        "visual_role": str(payload.get("visual_role") or payload.get("asset_role") or item.get("visual_role") or "").strip()[:120],
+        "reusable": (
+            reference_scope == "brand"
+            if category == "style_reference"
+            else _truthy_payload_value(payload, "reusable", bool(item.get("reusable")))
+        ),
+        "background_removed": _truthy_payload_value(payload, "background_removed", bool(item.get("background_removed"))),
+        "updated_at": now,
+    }
+    if category == "style_reference":
+        item_update["reference_scope"] = reference_scope
+    item.update(item_update)
     if file_record:
         item["file_paths"] = [file_record["file_path"]]
         item["source_sha256"] = source_hash
@@ -11596,7 +11643,7 @@ def request_scoped_content_asset_ids(payload):
         asset_id = str(entry.get("content_asset_id") or entry.get("asset_id") or "").strip()
         if asset_id and asset_id not in selected:
             selected.append(asset_id)
-    return selected[:12]
+    return selected
 
 
 def creative_request_branding_evidence(payload=None, purpose="ad_creative"):
@@ -12279,7 +12326,11 @@ def requested_content_asset_ids(payload):
         raw = [item.strip() for item in raw.split(",") if item.strip()]
     if not isinstance(raw, (list, tuple, set)):
         return []
-    return [str(item).strip() for item in raw if str(item).strip()][:12]
+    # Do not truncate a buyer's explicit selection here. The generation route
+    # performs the provider-capacity check after resolving all selected
+    # assets, so an oversized request fails explicitly instead of silently
+    # dropping the last photos.
+    return [str(item).strip() for item in raw if str(item).strip()]
 
 
 def selected_content_asset_references(payload, purpose="ad_creative"):
@@ -12309,7 +12360,7 @@ def selected_content_asset_references(payload, purpose="ad_creative"):
             continue
         if not motion_asset and not organic and not bool(item.get("approved_for_ads")):
             continue
-        paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=8)
+        paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=None)
         if not paths:
             continue
         selected_items.append(item)
@@ -12320,7 +12371,7 @@ def selected_content_asset_references(payload, purpose="ad_creative"):
                 protected.append(path)
             elif item.get("preservation_mode") == "style_only" and path not in style:
                 style.append(path)
-    return {"all": all_paths[:8], "protected": protected[:8], "style": style[:8], "items": selected_items}
+    return {"all": all_paths, "protected": protected, "style": style, "items": selected_items}
 
 
 def recent_generated_creatives(when="last_3_days", limit=24, cleanup=True):
@@ -12401,7 +12452,7 @@ def recent_generated_creatives(when="last_3_days", limit=24, cleanup=True):
 def explicit_protected_reference_paths(payload):
     candidates = []
     for key in PROTECTED_REFERENCE_PATH_KEYS:
-        candidates.extend(safe_image_paths({"image_paths": (payload or {}).get(key) or []}, limit=8))
+        candidates.extend(safe_image_paths({"image_paths": (payload or {}).get(key) or []}, limit=None))
     if str((payload or {}).get("preservation_mode") or "").strip().lower().replace("-", "_") in {
         "pixel_locked",
         "pixel_by_pixel",
@@ -12409,12 +12460,12 @@ def explicit_protected_reference_paths(payload):
         "immutable",
         "exact",
     }:
-        candidates.extend(safe_image_paths(payload or {}, limit=8))
+        candidates.extend(safe_image_paths(payload or {}, limit=None))
     deduped = []
     for path in candidates:
         if path not in deduped:
             deduped.append(path)
-    return deduped[:8]
+    return deduped
 
 
 def protected_real_asset_prompt_lock(protected_paths, use_as_background=False):
@@ -13733,8 +13784,6 @@ def codex_creative_plan(payload):
     return result
 
 
-HYBRID_STYLE_SHUFFLE_FILE = DATA_DIR / "hybrid_style_reference_shuffle.json"
-
 HYBRID_NAMED_COLORS = {
     "azul marino": (0, 35, 102),
     "navy blue": (0, 35, 102),
@@ -13837,7 +13886,7 @@ def _hybrid_real_media(payload, purpose="ad_creative", turn_capability=None):
         )
         if not item.get(required_approval) and not capability_allowed:
             continue
-        for path in safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=8):
+        for path in safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=None):
             allowed_paths[str(Path(path).resolve())] = item
     slots = []
     seen = set()
@@ -13897,7 +13946,7 @@ def _recover_implicit_hybrid_real_media(payload, purpose="ad_creative"):
     for asset_id in request_scoped_content_asset_ids(payload):
         if asset_id in by_id and asset_id not in selected_ids:
             selected_ids.append(asset_id)
-    reference_paths = safe_image_paths(payload, limit=8)
+    reference_paths = safe_image_paths(payload, limit=None)
     for path in reference_paths:
         try:
             asset_id = path_to_id.get(str(Path(path).resolve()))
@@ -13931,70 +13980,151 @@ def _recover_implicit_hybrid_real_media(payload, purpose="ad_creative"):
         for index, asset_id in enumerate(selected_ids, 1)
     ]
     selected_paths = {
-        path
+        str(Path(path).resolve())
         for asset_id in selected_ids
         for path in safe_image_paths({"image_paths": by_id[asset_id].get("file_paths") or []}, limit=8)
     }
+    selected_hashes = {
+        str(by_id[asset_id].get("source_sha256") or "")
+        for asset_id in selected_ids
+        if str(by_id[asset_id].get("source_sha256") or "")
+    }
+
+    def is_selected_real_media_path(raw_path):
+        try:
+            resolved = str(Path(str(raw_path)).resolve())
+            if resolved in selected_paths:
+                return True
+            return bool(selected_hashes and content_asset_sha256(resolved) in selected_hashes)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError):
+            return False
+
     raw_references = payload.get("reference_image_paths")
     if isinstance(raw_references, str):
         raw_references = [raw_references]
     if isinstance(raw_references, (list, tuple)):
         normalized["reference_image_paths"] = [
             str(path) for path in raw_references
-            if str(path).strip() and str(path) not in selected_paths
+            if str(path).strip() and not is_selected_real_media_path(path)
         ]
     return normalized, selected_ids
 
 
-def _hybrid_style_reference(payload, by_id, purpose="ad_creative"):
+def _eligible_style_reference(item, required_approval):
+    return bool(
+        isinstance(item, dict)
+        and item.get("category") == "style_reference"
+        and item.get("preservation_mode") == "style_only"
+        and item.get("classification_status") == "classified"
+        and item.get(required_approval)
+    )
+
+
+def _creative_style_references(payload, by_id, purpose="ad_creative"):
+    """Resolve task-specific and persistent brand design references.
+
+    Omitting ``style_reference`` automatically applies every approved
+    brand-scoped reference.  ``explicit`` adds one task reference for this
+    generation without mutating brand memory.  An explicit ``none`` is the
+    only way to suppress persistent references for one call.
+    """
     policy = payload.get("style_reference")
-    if not isinstance(policy, dict):
-        policy = {"mode": "none"}
-    mode = str(policy.get("mode") or "none").strip().lower()
+    policy_supplied = isinstance(policy, dict)
+    if not policy_supplied:
+        policy = {}
+    mode = str(policy.get("mode") or "brand").strip().lower()
     if mode == "none":
-        return None, {"mode": "none"}
-    candidates = []
+        return [], {"mode": "none", "asset_ids": [], "brand_asset_ids": []}
+    if mode not in {"brand", "pool", "explicit"}:
+        raise ValueError("style_reference.mode debe ser none, pool o explicit.")
     required_approval = "approved_for_daily_content" if image_purpose_is_organic(purpose) else "approved_for_ads"
-    item = None
+    brand_items = [
+        item for item in by_id.values()
+        if _eligible_style_reference(item, required_approval)
+        and str(item.get("reference_scope") or "task").strip().lower() == "brand"
+    ]
+    selected = []
+    explicit_item = None
     if mode == "explicit":
-        item = by_id.get(str(policy.get("asset_id") or "").strip())
-        if item and item.get("category") == "style_reference" and item.get("preservation_mode") == "style_only" and item.get("classification_status") == "classified" and item.get(required_approval):
-            candidates = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=1)
-        if not candidates and policy.get("file_path"):
+        explicit_item = by_id.get(str(policy.get("asset_id") or "").strip())
+        explicit_paths = (
+            safe_image_paths({"image_paths": explicit_item.get("file_paths") or []}, limit=1)
+            if _eligible_style_reference(explicit_item, required_approval)
+            else []
+        )
+        if not explicit_paths and policy.get("file_path"):
             requested = str(Path(str(policy.get("file_path")).strip()).resolve())
             for candidate_item in by_id.values():
-                if candidate_item.get("category") != "style_reference" or candidate_item.get("preservation_mode") != "style_only" or candidate_item.get("classification_status") != "classified" or not candidate_item.get(required_approval):
+                if not _eligible_style_reference(candidate_item, required_approval):
                     continue
                 paths = safe_image_paths({"image_paths": candidate_item.get("file_paths") or []}, limit=8)
                 if any(str(Path(path).resolve()) == requested for path in paths):
-                    item = candidate_item
-                    candidates = [path for path in paths if str(Path(path).resolve()) == requested]
+                    explicit_item = candidate_item
+                    explicit_paths = [path for path in paths if str(Path(path).resolve()) == requested]
                     break
-        if not candidates:
+        if not explicit_paths:
             raise ValueError("La referencia de diseño explícita no está clasificada y aprobada.")
-    elif mode == "pool":
-        items = [item for item in by_id.values() if item.get("category") == "style_reference" and item.get("preservation_mode") == "style_only" and item.get("classification_status") == "classified" and item.get(required_approval)]
-        for item in items:
-            paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=1)
+        selected.append((str(explicit_item.get("id") or ""), explicit_paths[0]))
+    elif not policy_supplied:
+        # Compatibility for older ordinary-image callers that selected a
+        # task-scoped style asset through content_asset_ids before the explicit
+        # style_reference contract existed.
+        for asset_id in requested_content_asset_ids(payload):
+            candidate_item = by_id.get(asset_id)
+            if not _eligible_style_reference(candidate_item, required_approval):
+                continue
+            if str(candidate_item.get("reference_scope") or "task").strip().lower() == "brand":
+                continue
+            paths = safe_image_paths({"image_paths": candidate_item.get("file_paths") or []}, limit=1)
             if paths:
-                candidates.append((str(item.get("id")), paths[0]))
-        if not candidates:
-            raise ValueError("No hay referencias gráficas aprobadas para usar en el pool.")
-        state = read_json(HYBRID_STYLE_SHUFFLE_FILE, {"remaining": [], "last": ""})
-        remaining = [str(x) for x in state.get("remaining", []) if str(x) in {x[0] for x in candidates}]
-        if not remaining:
-            remaining = [x[0] for x in candidates]
-            secrets.SystemRandom().shuffle(remaining)
-            last_id = str(state.get("last") or "")
-            if len(remaining) > 1 and remaining[0] == last_id:
-                remaining[0], remaining[1] = remaining[1], remaining[0]
-        selected_id = remaining.pop(0)
-        selected = next(path for asset_id, path in candidates if asset_id == selected_id)
-        write_json(HYBRID_STYLE_SHUFFLE_FILE, {"remaining": remaining, "last": selected_id, "updated_at": now_iso()}, ensure_ascii=False)
-        return selected, {"mode": "pool", "asset_id": selected_id}
-    else:
-        raise ValueError("style_reference.mode debe ser none, pool o explicit.")
-    return candidates[0], {"mode": mode, "asset_id": str((item or {}).get("id") or policy.get("asset_id") or "")}
+                selected.append((str(candidate_item.get("id") or ""), paths[0]))
+                explicit_item = explicit_item or candidate_item
+    for item in brand_items:
+        paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=1)
+        if paths and all(str(Path(path).resolve()) != str(Path(paths[0]).resolve()) for _, path in selected):
+            selected.append((str(item.get("id") or ""), paths[0]))
+    if mode == "pool" and not brand_items:
+        raise ValueError("No hay referencias gráficas aprobadas para usar en el pool.")
+    required_asset_ids = payload.get("_required_style_reference_asset_ids")
+    if isinstance(required_asset_ids, list):
+        exact_selected = []
+        for asset_id in [str(value or "") for value in required_asset_ids]:
+            item = by_id.get(asset_id)
+            if not _eligible_style_reference(item, required_approval):
+                raise ValueError("Una referencia de estilo requerida por el reintento ya no está aprobada o disponible.")
+            paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=1)
+            if not paths:
+                raise ValueError("Una referencia de estilo requerida por el reintento ya no está disponible.")
+            exact_selected.append((asset_id, paths[0]))
+        selected = exact_selected
+    if len(selected) > 8:
+        raise ValueError(
+            "Hay más de 8 referencias de estilo aprobadas; Codex/Image no puede recibirlas todas en una sola generación. "
+            "Reduce explícitamente el set de branding antes de continuar."
+        )
+    asset_ids = [asset_id for asset_id, _ in selected if asset_id]
+    brand_asset_ids = [
+        str(item.get("id") or "") for item in brand_items
+        if str(item.get("id") or "") in asset_ids
+    ]
+    task_asset_ids = [asset_id for asset_id in asset_ids if asset_id not in brand_asset_ids]
+    evidence_mode = "explicit" if explicit_item else "brand"
+    return [path for _, path in selected], {
+        "mode": evidence_mode,
+        "asset_ids": asset_ids,
+        "asset_id": str((explicit_item or {}).get("id") or "") if explicit_item else "",
+        "explicit_asset_id": str((explicit_item or {}).get("id") or "") if explicit_item else "",
+        "brand_asset_ids": brand_asset_ids,
+        "task_asset_ids": task_asset_ids,
+        "reference_count": len(selected),
+        "policy_supplied": policy_supplied,
+    }
+
+
+def _hybrid_style_reference(payload, by_id, purpose="ad_creative"):
+    """Compatibility wrapper for callers that still expect one path."""
+    paths, evidence = _creative_style_references(payload, by_id, purpose=purpose)
+    return (paths[0] if paths else None), evidence
 
 
 def _hybrid_public_evidence(slots, composition):
@@ -14037,7 +14167,271 @@ def _hybrid_overlay_attempt_evidence(attempt, *, provider_ok, composition_pass=N
     return item
 
 
-def _hybrid_overlay_failure_result(keyed_slots, style_evidence, reference_count, attempts):
+def _hybrid_retry_contract(layout, keyed_slots, style_evidence, payload=None):
+    mode = str((style_evidence or {}).get("mode") or "none")
+    style_policy = {"mode": "none"}
+    if mode == "explicit" and (style_evidence or {}).get("explicit_asset_id"):
+        style_policy = {
+            "mode": "explicit",
+            "asset_id": str(style_evidence["explicit_asset_id"]),
+        }
+    elif (style_evidence or {}).get("brand_asset_ids"):
+        style_policy = {"mode": "pool"}
+    contract = {
+        "layout_intent": str(layout),
+        "real_media": [
+            {
+                "slot_id": str(slot.get("slot_id") or ""),
+                "content_asset_id": str(slot.get("asset_id") or ""),
+                "role": str(slot.get("role") or "supporting"),
+                "label": str(slot.get("label") or ""),
+            }
+            for slot in keyed_slots
+        ],
+        "style_reference": style_policy,
+        "style_reference_asset_ids": list((style_evidence or {}).get("asset_ids") or []),
+        "all_real_media_required": True,
+    }
+    payload = payload if isinstance(payload, dict) else {}
+    creative_facts = {}
+    for key in (
+        "request", "purpose", "visual_direction", "format", "aspect_ratio",
+        "include_logo", "logo_color_mode", "logo_position",
+    ):
+        value = payload.get(key)
+        if value not in (None, "", [], {}):
+            creative_facts[key] = str(value)[:5000] if isinstance(value, str) else value
+    if isinstance(payload.get("text_content"), dict):
+        creative_facts["text_content"] = redact_payload(dict(payload["text_content"]))
+    if isinstance(payload.get("brand_colors"), (list, tuple, str)):
+        creative_facts["brand_colors"] = payload.get("brand_colors")
+    contract["creative_facts"] = creative_facts
+    return contract
+
+
+HYBRID_RETRY_INSTRUCTION = (
+    "Al reintentar esta misma solicitud, conserva exactamente layout_intent, "
+    "todos los elementos de real_media en el mismo orden y la misma referencia "
+    "de estilo del retry_contract. No reduzcas ni sustituyas las fotos salvo que "
+    "el comprador cambie explícitamente el pedido."
+)
+
+
+def _hybrid_retry_contract_entries_unlocked():
+    """Read both the current collection and the pre-collection format."""
+    stored = read_json(HYBRID_RETRY_CONTRACT_FILE, {})
+    if isinstance(stored, dict) and isinstance(stored.get("contracts"), list):
+        return [item for item in stored["contracts"] if isinstance(item, dict)]
+    if isinstance(stored, dict) and isinstance(stored.get("contract"), dict):
+        return [stored]
+    return []
+
+
+def _hybrid_retry_contract_scope_matches(state, turn):
+    if not isinstance(state, dict) or not isinstance(turn, dict):
+        return False
+    for key in ("chat_id", "session_id", "transport"):
+        if not hmac.compare_digest(str(state.get(key) or ""), str(turn.get(key) or "")):
+            return False
+    return True
+
+
+def _hybrid_retry_contract_is_live(state):
+    try:
+        expires = datetime.fromisoformat(str(state.get("expires_at") or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    return bool(expires.tzinfo and expires.astimezone(timezone.utc) > datetime.now(timezone.utc))
+
+
+def _hybrid_retry_requested(raw_message):
+    """Recognize a retry from server-captured buyer text only."""
+    text = unicodedata.normalize("NFKD", str(raw_message or "").casefold())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9]+", " ", text).strip()
+    return bool(re.search(
+        r"(?:^| )(?:reintenta|reintentar|intenta de nuevo|vuelve a intentar|"
+        r"hazlo de nuevo|hazlo otra vez|genera de nuevo|generala de nuevo|"
+        r"otra vez|try again|retry|regenerate|generate again)(?: |$)",
+        text,
+    ))
+
+
+def _hybrid_retry_contract_state(turn=None):
+    """Find the newest live receipt for this chat, including a later retry turn.
+
+    Receipts are keyed by conversation scope rather than stored as one global
+    object. Exact same-turn matches remain preferred, while a later inbound
+    message can use the receipt only when its server-captured text explicitly
+    asks to retry. This keeps a new creative independent from an old failure.
+    """
+    turn = turn if isinstance(turn, dict) else _trusted_buyer_turn(max_age_seconds=900)
+    if not turn:
+        return {}
+    with _hybrid_turn_asset_capability_lock():
+        entries = _hybrid_retry_contract_entries_unlocked()
+    matching = [
+        item for item in entries
+        if _hybrid_retry_contract_scope_matches(item, turn) and _hybrid_retry_contract_is_live(item)
+    ]
+    if not matching:
+        return {}
+    exact = [item for item in matching if _hybrid_turn_identity_matches(item, turn)]
+    if exact:
+        return exact[-1]
+    return matching[-1]
+
+
+def _record_hybrid_retry_contract(contract, turn=None, ttl_seconds=900):
+    turn = turn if isinstance(turn, dict) else _trusted_buyer_turn(max_age_seconds=900)
+    if not turn or not isinstance(contract, dict):
+        return False
+    try:
+        sequence = int(turn.get("message_sequence"))
+    except (TypeError, ValueError):
+        return False
+    state = {
+        "contract": contract,
+        "chat_id": str(turn.get("chat_id") or ""),
+        "session_id": str(turn.get("session_id") or ""),
+        "transport": str(turn.get("transport") or ""),
+        "message_sequence": sequence,
+        "message_hash": str(turn.get("message_hash") or ""),
+        "created_at": now_iso(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=max(1, int(ttl_seconds)))).isoformat(),
+    }
+    with _hybrid_turn_asset_capability_lock():
+        entries = _hybrid_retry_contract_entries_unlocked()
+        entries = [
+            item for item in entries
+            if not _hybrid_retry_contract_scope_matches(item, turn)
+        ]
+        entries.append(state)
+        write_private_json(
+            HYBRID_RETRY_CONTRACT_FILE,
+            {"contracts": entries[-HYBRID_RETRY_CONTRACT_MAX_ENTRIES:]},
+            ensure_ascii=False,
+        )
+    return True
+
+
+def _clear_hybrid_retry_contract(turn=None):
+    turn = turn if isinstance(turn, dict) else _trusted_buyer_turn(max_age_seconds=900)
+    if not turn:
+        return False
+    with _hybrid_turn_asset_capability_lock():
+        entries = _hybrid_retry_contract_entries_unlocked()
+        remaining = [
+            item for item in entries
+            if not _hybrid_retry_contract_scope_matches(item, turn)
+        ]
+        if len(remaining) == len(entries):
+            return False
+        write_private_json(
+            HYBRID_RETRY_CONTRACT_FILE,
+            {"contracts": remaining[-HYBRID_RETRY_CONTRACT_MAX_ENTRIES:]},
+            ensure_ascii=False,
+        )
+    return True
+
+
+def _normalized_retry_real_media(payload):
+    entries = payload.get("real_media") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return []
+    return [
+        {
+            "slot_id": str(item.get("slot_id") or ""),
+            "content_asset_id": str(item.get("content_asset_id") or item.get("asset_id") or ""),
+            "role": str(item.get("role") or "supporting"),
+            "label": str(item.get("label") or item.get("role") or ""),
+        }
+        for item in entries
+        if isinstance(item, dict)
+    ]
+
+
+def _enforce_hybrid_retry_contract(payload, turn=None):
+    normalized = dict(payload or {})
+    # Never trust an internal enforcement hint supplied through an open MCP
+    # schema; only the server-written same-turn receipt may populate it.
+    normalized.pop("_required_style_reference_asset_ids", None)
+    state = _hybrid_retry_contract_state(turn=turn)
+    if not state:
+        return normalized, None
+    turn = turn if isinstance(turn, dict) else _trusted_buyer_turn(max_age_seconds=900)
+    same_turn = bool(turn and _hybrid_turn_identity_matches(state, turn))
+    retry_requested = bool(turn and _hybrid_retry_requested(turn.get("message")))
+    if not same_turn and not retry_requested:
+        # A new creative in the same chat is not implicitly a retry of the
+        # previous failure. Leave the receipt available for an explicit retry
+        # message without imposing the old layout on unrelated work.
+        return normalized, None
+    contract = state["contract"]
+    expected_media = list(contract.get("real_media") or [])
+    expected_style = contract.get("style_reference") if isinstance(contract.get("style_reference"), dict) else {"mode": "none"}
+    # A later Telegram retry often arrives as a short "intenta de nuevo"
+    # message, so Hermes may not repeat every structured field. Hydrate only
+    # missing fields from the server-written contract; any changed field is
+    # still compared below and is rejected rather than silently rewritten.
+    if retry_requested:
+        if not normalized.get("layout_intent"):
+            normalized["layout_intent"] = str(contract.get("layout_intent") or "")
+        if not normalized.get("real_media"):
+            normalized["real_media"] = list(expected_media)
+        if not isinstance(normalized.get("style_reference"), dict) or not normalized.get("style_reference"):
+            normalized["style_reference"] = dict(expected_style)
+    actual_style = normalized.get("style_reference") if isinstance(normalized.get("style_reference"), dict) else {}
+    expected_mode = str(expected_style.get("mode") or "none")
+    implicit_retry_mode = expected_mode if expected_mode in {"none", "pool"} else ""
+    actual_mode = str(actual_style.get("mode") or implicit_retry_mode).strip().lower()
+    style_matches = actual_mode == expected_mode
+    if expected_mode == "explicit":
+        style_matches = style_matches and hmac.compare_digest(
+            str(actual_style.get("asset_id") or ""),
+            str(expected_style.get("asset_id") or ""),
+        )
+    expected_facts = contract.get("creative_facts") if isinstance(contract.get("creative_facts"), dict) else {}
+    for key, expected in expected_facts.items():
+        if key == "text_content":
+            if not isinstance(normalized.get(key), dict):
+                normalized[key] = dict(expected) if isinstance(expected, dict) else expected
+            continue
+        value = normalized.get(key)
+        if value in (None, "", [], {}):
+            normalized[key] = expected
+        elif key == "request" and retry_requested and isinstance(value, str) and _hybrid_retry_requested(value):
+            # Do not compare the transport-level retry phrase with the
+            # original creative request.
+            normalized[key] = expected
+    actual_facts = {
+        key: normalized.get(key)
+        for key in expected_facts
+        if key != "text_content"
+    }
+    if "text_content" in expected_facts:
+        actual_facts["text_content"] = normalized.get("text_content") if isinstance(normalized.get("text_content"), dict) else {}
+    matches = bool(
+        str(normalized.get("layout_intent") or "") == str(contract.get("layout_intent") or "")
+        and _normalized_retry_real_media(normalized) == expected_media
+        and style_matches
+        and actual_facts == expected_facts
+    )
+    if not matches:
+        return normalized, {
+            "ok": False,
+            "blocked": True,
+            "reason": "hybrid_retry_contract_mismatch",
+            "retryable": True,
+            "error": "El reintento cambió o eliminó parte del pedido original; no invoqué Image 2.",
+            "retry_contract": contract,
+            "retry_instruction": HYBRID_RETRY_INSTRUCTION,
+        }
+    normalized["_required_style_reference_asset_ids"] = list(contract.get("style_reference_asset_ids") or [])
+    return normalized, None
+
+
+def _hybrid_overlay_failure_result(layout, keyed_slots, style_evidence, reference_count, attempts):
     public_slots, _ = _hybrid_public_evidence(keyed_slots, {})
     return {
         "ok": False,
@@ -14047,6 +14441,8 @@ def _hybrid_overlay_failure_result(keyed_slots, style_evidence, reference_count,
         "error": HYBRID_OVERLAY_INVALID_MESSAGE_ES,
         "message": HYBRID_OVERLAY_INVALID_MESSAGE_ES,
         "message_en": HYBRID_OVERLAY_INVALID_MESSAGE_EN,
+        "retry_contract": _hybrid_retry_contract(layout, keyed_slots, style_evidence),
+        "retry_instruction": HYBRID_RETRY_INSTRUCTION,
         "hybrid": {"ok": False, "slots": public_slots, "style_reference": style_evidence,
                     "provider_reference_count": reference_count, "attempts": attempts},
     }
@@ -14070,6 +14466,15 @@ def _remove_hybrid_candidate(path, *, remove_candidate=True):
 def codex_image_generate(payload):
     """Generate a raster creative through the Codex/Image bridge."""
     payload = dict(payload or {})
+    retry_turn = _trusted_buyer_turn(max_age_seconds=900)
+    payload, retry_contract_block = _enforce_hybrid_retry_contract(payload, turn=retry_turn)
+    if retry_contract_block:
+        log_action(
+            "codex_image_generate",
+            {"ok": False, "reason": retry_contract_block["reason"]},
+            "blocked",
+        )
+        return retry_contract_block
     initial_purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
     payload, implicit_hybrid_asset_ids = _recover_implicit_hybrid_real_media(payload, purpose=initial_purpose)
     brief_payload = normalize_ad_brief_payload(payload)
@@ -14143,7 +14548,7 @@ def codex_image_generate(payload):
             slots, asset_index = _hybrid_real_media(payload, purpose=purpose, turn_capability=turn_capability)
             if not slots:
                 raise ValueError("El modo híbrido necesita al menos una foto real validada.")
-            style_path, style_evidence = _hybrid_style_reference(payload, asset_index, purpose=purpose)
+            style_paths, style_evidence = _creative_style_references(payload, asset_index, purpose=purpose)
             default_layout = "hero" if len(slots) == 1 else "before_after" if len(slots) == 2 and {s.get("role") for s in slots} == {"before", "after"} else "services" if len(slots) == 2 else "collage"
             layout = str(payload.get("layout_intent") or default_layout).strip().lower()
             layout_limits = {
@@ -14202,8 +14607,10 @@ def codex_image_generate(payload):
                 logo_safe_zone=resolved_logo_position if include_logo else "",
                 style_reference_mode=str(style_evidence.get("mode") or "none"),
             )
-            # Deliberately only the opt-in style reference enters the provider.
-            hybrid_refs = [style_path] if style_path else []
+            # Protected buyer photos and the official logo never enter the
+            # provider. Only task-specific and persistent brand style
+            # references are attached to Codex/Image.
+            hybrid_refs = list(style_paths)
             retry_key_contract = ", ".join(
                 f"{slot.get('slot_id', 'slot')}=#{int(slot['key_rgb'][0]):02X}{int(slot['key_rgb'][1]):02X}{int(slot['key_rgb'][2]):02X}"
                 for slot in keyed_slots
@@ -14247,19 +14654,21 @@ def codex_image_generate(payload):
                     _remove_hybrid_candidate(overlay_path)
                     if attempt == 1:
                         continue
-                    result = _hybrid_overlay_failure_result(keyed_slots, style_evidence, len(hybrid_refs), attempts)
+                    result = _hybrid_overlay_failure_result(layout, keyed_slots, style_evidence, len(hybrid_refs), attempts)
                     break
                 except (OSError, ValueError):
                     attempts.append(_hybrid_overlay_attempt_evidence(attempt, provider_ok=True, composition_pass=False, reason="composition_failed"))
                     _remove_hybrid_candidate(overlay_path)
-                    result = _hybrid_overlay_failure_result(keyed_slots, style_evidence, len(hybrid_refs), attempts)
+                    result = _hybrid_overlay_failure_result(layout, keyed_slots, style_evidence, len(hybrid_refs), attempts)
                     break
                 finally:
                     _remove_hybrid_candidate(overlay_path, remove_candidate=False)
                 if not composition.get("pass"):
                     attempts.append(_hybrid_overlay_attempt_evidence(attempt, provider_ok=True, composition_pass=False, reason="composition_mask_invalid"))
                     _remove_hybrid_candidate(final_path)
-                    result = _hybrid_overlay_failure_result(keyed_slots, style_evidence, len(hybrid_refs), attempts)
+                    if attempt == 1:
+                        continue
+                    result = _hybrid_overlay_failure_result(layout, keyed_slots, style_evidence, len(hybrid_refs), attempts)
                     break
                 attempts.append(_hybrid_overlay_attempt_evidence(attempt, provider_ok=True, composition_pass=True, reason="accepted"))
                 result["image_path"] = str(final_path)
@@ -14267,7 +14676,20 @@ def codex_image_generate(payload):
                 public_slots, public_composition = _hybrid_public_evidence(keyed_slots, composition)
                 result["hybrid"] = {"ok": True, "layout_intent": layout, "slots": public_slots, "composition": public_composition, "style_reference": style_evidence, "provider_reference_count": len(hybrid_refs), "attempts": attempts}
                 break
+            if not result.get("ok"):
+                # Preserve the exact semantic contract even when the provider
+                # itself fails.  Hermes sees this compact receipt and can retry
+                # later without collapsing a three-photo collage into a hero.
+                result["retry_contract"] = _hybrid_retry_contract(
+                    layout,
+                    keyed_slots,
+                    style_evidence,
+                    payload=payload,
+                )
+                result.setdefault("retry_instruction", HYBRID_RETRY_INSTRUCTION)
+                _record_hybrid_retry_contract(result["retry_contract"], turn=retry_turn)
             if result.get("ok") and result.get("hybrid", {}).get("ok"):
+                _clear_hybrid_retry_contract(turn=retry_turn)
                 if include_logo and not official_logo:
                     raise ValueError("Se solicitó el logo oficial, pero no hay un logo clasificado guardado.")
                 if include_logo and official_logo:
@@ -14337,27 +14759,69 @@ def codex_image_generate(payload):
             )
         if payload.get("reference_image_summary"):
             image_prompt += f"\nReferencia visual descrita por el agente: {payload.get('reference_image_summary')}\n"
-        reference_paths = safe_image_paths(payload, limit=8)
+        reference_paths = safe_image_paths(payload, limit=None)
+        content_asset_library = load_content_asset_library()
+        content_asset_index = {
+            str(item.get("id") or ""): item
+            for item in (content_asset_library.get("items") or [])
+            if isinstance(item, dict) and str(item.get("id") or "")
+        }
+        style_reference_paths, style_reference_evidence = _creative_style_references(
+            payload,
+            content_asset_index,
+            purpose=purpose,
+        )
         library_references = selected_content_asset_references(payload, purpose=purpose)
-        for path in library_references["all"]:
+        for path in [
+            item for item in library_references["all"]
+            if item not in library_references["style"]
+        ]:
             if path not in reference_paths:
                 reference_paths.append(path)
-        protected_reference_paths = explicit_protected_reference_paths(payload)
+        for path in style_reference_paths:
+            if path not in reference_paths:
+                reference_paths.append(path)
+        if style_reference_paths:
+            image_prompt += (
+                "\nCONTRATO DE REFERENCIAS VISUALES: las imágenes de estilo adjuntas sirven solo para "
+                "interpretar composición, energía tipográfica, ritmo, paleta y tratamiento gráfico. "
+                "No copies sus logos, fotografías, nombres, teléfonos, precios, promociones ni texto. "
+                "Las reglas de marca confirmadas, el pedido actual y sus datos exactos siempre tienen prioridad. "
+            )
+            if style_reference_evidence.get("mode") == "explicit":
+                image_prompt += (
+                    "La primera referencia de estilo adjunta fue elegida solo para esta tarea; no la conviertas "
+                    "en una regla permanente ni permitas que contradiga el branding aprobado.\n"
+                )
+        style_reference_set = {str(Path(path).resolve()) for path in style_reference_paths}
+        protected_reference_paths = [
+            path for path in explicit_protected_reference_paths(payload)
+            if str(Path(path).resolve()) not in style_reference_set
+        ]
         for path in library_references["protected"]:
+            if str(Path(path).resolve()) in style_reference_set:
+                continue
             if path not in protected_reference_paths:
                 protected_reference_paths.append(path)
-        background_requested = bool(reference_paths and reference_as_background_requested(payload, request))
-        if background_requested and reference_paths[0] not in protected_reference_paths:
-            protected_reference_paths.insert(0, reference_paths[0])
+        background_reference_paths = [
+            path for path in reference_paths
+            if str(Path(path).resolve()) not in style_reference_set
+        ]
+        background_requested = bool(background_reference_paths and reference_as_background_requested(payload, request))
+        if background_requested:
+            background_path = background_reference_paths[0]
+            protected_reference_paths = [path for path in protected_reference_paths if path != background_path]
+            protected_reference_paths.insert(0, background_path)
         # Keep one input slot available for an official logo when the brand
         # requires it. A daily generation should select the most relevant
         # photos from the durable batch instead of attaching the whole archive.
-        protected_reference_paths = [path for path in protected_reference_paths if path in reference_paths][:7]
-        reference_paths = [
+        protected_reference_paths = [path for path in protected_reference_paths if path in reference_paths]
+        ordered_reference_paths = [
             *protected_reference_paths,
             *[path for path in reference_paths if path not in protected_reference_paths],
-        ][:8]
-        background_prompt_lock = reference_background_prompt_lock(reference_paths, payload, request)
+        ]
+        reference_paths = ordered_reference_paths
+        background_prompt_lock = reference_background_prompt_lock(background_reference_paths, payload, request)
         if background_prompt_lock:
             image_prompt += background_prompt_lock
         protected_asset_lock = protected_real_asset_prompt_lock(
@@ -14380,6 +14844,12 @@ def codex_image_generate(payload):
             )
         else:
             include_logo = str(include_logo_value).strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
+        reference_capacity = 7 if include_logo and official_logo else 8
+        if len(reference_paths) > reference_capacity:
+            raise ValueError(
+                f"La solicitud necesita {len(reference_paths)} referencias, pero Codex/Image admite "
+                f"{reference_capacity} antes de reservar el logo. No omitiré silenciosamente referencias de marca o fotos reales."
+            )
         logo_position = str(payload.get("logo_position") or "top-right").strip().lower()
         logo_background = str(payload.get("logo_background") or "auto").strip().lower()
         logo_render_mode = str(payload.get("logo_render_mode") or "protected_context").strip().lower()
@@ -14441,6 +14911,7 @@ def codex_image_generate(payload):
             "selected_prompt": selected_prompt,
             "logo_context": prompt_package.get("logo_context", ""),
             "reference_image_count": len(reference_paths),
+            "style_reference": style_reference_evidence,
             "include_logo": bool(include_logo and official_logo),
             "logo_render_mode": logo_render_mode if include_logo and official_logo else "none",
             "logo_protection": "exact_prompt_lock" if include_logo and official_logo and logo_render_mode == "protected_context" else ("deterministic_composite" if include_logo and official_logo else "none"),

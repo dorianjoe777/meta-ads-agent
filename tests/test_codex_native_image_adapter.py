@@ -57,6 +57,8 @@ class NativeImageOAuthBridgeTests(unittest.TestCase):
             references.mkdir(parents=True)
             reference = references / "real-photo.png"
             reference.write_bytes(b"real-photo")
+            second_reference = references / "design-style.png"
+            second_reference.write_bytes(b"design-style")
             outside = root / "outside.png"
             outside.write_bytes(b"outside")
             captured = {}
@@ -68,7 +70,19 @@ class NativeImageOAuthBridgeTests(unittest.TestCase):
                 def __init__(self, command, **kwargs):
                     captured["command"] = command
                     captured["env"] = kwargs["env"]
-                    captured["attached_bytes"] = Path(command[command.index("--image") + 1]).read_bytes()
+                    separator = command.index("--")
+                    image_options = command[:separator]
+                    captured["parsed_prompt"] = command[separator + 1:]
+                    captured["parsed_images"] = [
+                        image_options[index + 1]
+                        for index, value in enumerate(image_options)
+                        if value == "--image"
+                    ]
+                    captured["attached_bytes"] = [
+                        Path(command[index + 1]).read_bytes()
+                        for index, value in enumerate(command)
+                        if value == "--image"
+                    ]
                     generated = Path(kwargs["env"]["CODEX_HOME"]) / "generated_images" / "job" / "image.png"
                     generated.parent.mkdir(parents=True, exist_ok=True)
                     generated.write_bytes(b"generated")
@@ -91,7 +105,7 @@ class NativeImageOAuthBridgeTests(unittest.TestCase):
                  patch.object(brand.subprocess, "Popen", FakeProcess):
                 result = brand.call_codex_image_cli_direct(
                     "Usa la foto real adjunta", model="gpt-5.6-terra",
-                    output_root=work, reference_image_paths=[str(reference), str(outside)],
+                    output_root=work, reference_image_paths=[str(reference), str(second_reference), str(outside)],
                     codex_home=codex_home, isolated_reference_root=work,
                 )
 
@@ -99,8 +113,17 @@ class NativeImageOAuthBridgeTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(command[command.index("-m") + 1], "gpt-5.6-terra")
             self.assertIn("--ephemeral", command)
-            self.assertEqual(command.count("--image"), 1)
-            self.assertEqual(captured["attached_bytes"], b"real-photo")
+            self.assertEqual(command.count("--image"), 2)
+            self.assertEqual(captured["attached_bytes"], [b"real-photo", b"design-style"])
+            self.assertEqual(captured["parsed_images"], [
+                command[command.index("--image") + 1],
+                command[command.index("--image", command.index("--image") + 1) + 1],
+            ])
+            self.assertEqual(len(captured["parsed_prompt"]), 1)
+            self.assertIn("Usa la foto real adjunta", captured["parsed_prompt"][0])
+            self.assertEqual(command[-2], "--")
+            self.assertIn("Usa la foto real adjunta", command[-1])
+            self.assertTrue(all(command.index("--") > index for index, value in enumerate(command) if value == "--image"))
             self.assertEqual(captured["env"]["CODEX_HOME"], str(codex_home.resolve()))
             self.assertEqual(captured["env"]["HERMES_HOME"], str(codex_home.resolve()))
             self.assertNotIn("OPENAI_API_KEY", captured["env"])
