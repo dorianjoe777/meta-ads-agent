@@ -123,6 +123,12 @@ def _snapshot_reference(source: Path, target: Path) -> tuple[str, int, str]:
                     raise OSError("reference_snapshot_write_failed")
                 view = view[written:]
         os.fchmod(target_fd, 0o600)
+        # The broker opens this short-lived snapshot from a sibling container
+        # running under its own service UID. Its tenant-specific parent is
+        # already protected at 0700, so granting read access on the file does
+        # not expose it to other tenants while allowing the broker to consume
+        # a reference created by a root-running hosted tenant.
+        os.chmod(target, 0o644)
         return digest.hexdigest(), total, suffix
     except OSError as exc:
         raise ValueError("reference_invalid") from exc
@@ -245,6 +251,13 @@ def maybe_generate_central_image(prompt: str, *, output_root: str | Path, output
             raise ValueError("disabled")
         with tempfile.TemporaryDirectory(prefix=f"{request_tenant}-", dir=exchange_root) as temp:
             exchange = Path(temp).resolve()
+            # The hosted tenant may run as root while the central broker runs
+            # as the unprivileged service UID. The parent exchange directory
+            # remains tenant-private (0700); only this ephemeral child needs
+            # to be traversable by the broker so it can snapshot references.
+            # Without this, reference-bearing requests fail validation even
+            # though reference-free image requests work.
+            exchange.chmod(0o755)
             ref_meta: list[dict[str, object]] = []
             ref_names: list[str] = []
             total = 0
