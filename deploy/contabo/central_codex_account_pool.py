@@ -181,6 +181,11 @@ class CentralCodexAccountPool:
                           model: str | None, output_root: Path | None,
                           output_name: str, reference_image_paths: Sequence[str],
                           purpose: str) -> object:
+        if output_root is None:
+            # A broker-owned work directory is required both for the returned
+            # image and for validating any reference snapshots. Never let a
+            # malformed internal call fall back to tenant/workspace roots.
+            return {"ok": False, "failure_category": "provider_failed"}
         from codex_brand_guides import call_codex_image_cli_direct
         result = call_codex_image_cli_direct(
             prompt, timeout=timeout, model=IMAGE_MODEL, output_root=output_root,

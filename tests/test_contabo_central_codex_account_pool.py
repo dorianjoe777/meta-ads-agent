@@ -120,6 +120,19 @@ class CentralCodexAccountPoolTests(unittest.TestCase):
             native.assert_not_called()
             self.assertNotIn("secret", repr(result))
 
+    def test_default_provider_rejects_missing_broker_workdir(self):
+        with tempfile.TemporaryDirectory() as raw:
+            accounts = self._accounts(Path(raw))
+            pool = CentralCodexAccountPool(accounts)
+            with patch.object(brand, "call_codex_image_cli_direct") as cli:
+                result = pool._default_provider(
+                    "private prompt", codex_home=Path(accounts[0]["codex_home"]),
+                    timeout=1, model=None, output_root=None, output_name="x",
+                    reference_image_paths=("/outside/reference.png",), purpose="ad_creative",
+                )
+            self.assertEqual(result, {"ok": False, "failure_category": "provider_failed"})
+            cli.assert_not_called()
+
     def test_three_account_pool_attempts_at_most_two_accounts_per_request(self):
         with tempfile.TemporaryDirectory() as raw:
             calls = []
