@@ -51,6 +51,8 @@ CREATE POLICY tenant_isolation ON admira.tenant_grace_reminders
 REVOKE ALL ON TABLE admira.tenant_grace_reminders
   FROM PUBLIC, admira_ingress, admira_runtime, admira_delivery,
        admira_scheduler, admira_provisioner, admira_operator;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE admira.tenant_grace_reminders
+  TO admira_control_owner;
 
 ALTER TABLE admira.tenant_entitlements
   DROP CONSTRAINT IF EXISTS tenant_entitlements_lifecycle_state_check;
