@@ -11,17 +11,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 import codex_brand_guides as brand  # noqa: E402
+import codex_oauth_images as oauth_images  # noqa: E402
 import hosted_central_image_client as central_client  # noqa: E402
 
 
 class CentralImageHookTests(unittest.TestCase):
-    def test_image_bridge_uses_provider_ratio_contract(self):
+    def test_image_bridge_maps_product_ratios_to_direct_images_sizes(self):
         self.assertEqual(brand.infer_image_aspect_ratio("Crear un anuncio 4:5"), "4:5")
         self.assertEqual(brand.infer_image_aspect_ratio("Crear una historia 9:16"), "9:16")
         self.assertEqual(brand.infer_image_aspect_ratio("Crear una historia vertical"), "4:5")
         self.assertEqual(brand.infer_image_aspect_ratio("Crear un banner 16:9"), "16:9")
         self.assertEqual(brand.infer_image_aspect_ratio("Crear una imagen cuadrada"), "1:1")
-        self.assertIn('"aspect_ratio": payload.get("aspect_ratio") or "1:1"', brand.HERMES_IMAGE_BRIDGE_SCRIPT)
+        self.assertEqual(oauth_images._size_for_aspect("4:5"), "1024x1536")
+        self.assertEqual(oauth_images._size_for_aspect("9:16"), "1024x1536")
+        self.assertEqual(oauth_images._size_for_aspect("16:9"), "1536x1024")
+        self.assertEqual(oauth_images._size_for_aspect("1:1"), "1024x1024")
 
     def test_image_failure_classifier_is_conservative_and_product_specific(self):
         self.assertEqual(
@@ -35,6 +39,10 @@ class CentralImageHookTests(unittest.TestCase):
         self.assertEqual(
             brand.classify_image_failure("usage limit reached", error_type="rate_limit", backend="codex-cli-direct"),
             "codex_usage_limit",
+        )
+        self.assertEqual(
+            brand.classify_image_failure("usage limit reached", error_type="rate_limit", backend="codex-oauth-images-direct"),
+            "chatgpt_images_limit",
         )
         self.assertEqual(brand.classify_image_failure("usage limit reached", provider="openai-codex"), "unknown")
         self.assertEqual(brand.classify_image_failure("401 unauthorized", error_type="auth_required"), "provider_auth")
@@ -96,7 +104,7 @@ class CentralImageHookTests(unittest.TestCase):
             "success": True,
             "image": "/tmp/generated.png",
             "returncode": 0,
-            "provider": "openai-codex",
+            "provider": "openai-codex-images",
         }
         with tempfile.TemporaryDirectory() as raw, patch.object(
             central_client, "maybe_generate_central_image", return_value=None
@@ -110,7 +118,7 @@ class CentralImageHookTests(unittest.TestCase):
         central.assert_called_once()
         local.assert_called_once()
         self.assertTrue(result["ok"])
-        self.assertEqual(result["backend"], "hermes-openai-codex")
+        self.assertEqual(result["backend"], "codex-oauth-images-direct")
 
     def test_central_fail_closed_error_never_falls_back_local(self):
         blocked = {

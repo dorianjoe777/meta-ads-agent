@@ -2255,7 +2255,6 @@ def infer_image_aspect_ratio(prompt):
 
 
 HERMES_IMAGE_BRIDGE_SCRIPT = r"""
-import inspect
 import json
 import sys
 
@@ -2266,117 +2265,13 @@ def respond(payload):
 
 try:
     payload = json.loads(sys.stdin.read() or "{}")
-    # A hosted pool slot keeps the canonical Codex OAuth session in its private
-    # auth.json.  Mirror it into Hermes' provider namespace before using the
-    # normal r99 image provider, then mirror a refresh back afterwards.  This
-    # changes only credential storage; it deliberately does not monkey-patch
-    # the provider, attach buyer media, or start Codex CLI.
-    pool_auth_path = None
-    if payload.get("pool_oauth") is True:
-        from codex_oauth_session import prepare_hermes_oauth
-        pool_auth_path = prepare_hermes_oauth()
-    from hermes_cli.plugins import _ensure_plugins_discovered
-
-    _ensure_plugins_discovered(force=True)
-    from agent.image_gen_registry import get_provider, list_providers
-
-    provider = get_provider("openai-codex")
-    if provider is None:
-        respond({
-            "success": False,
-            "error": "Hermes no registró el generador de imágenes openai-codex.",
-            "error_type": "provider_not_registered",
-            "providers": [getattr(item, "name", "") for item in list_providers()],
-        })
-        raise SystemExit(0)
-
-    mode = payload.get("mode") or "generate"
-    if mode == "status":
-        available = bool(provider.is_available())
-        respond({
-            "success": available,
-            "provider": getattr(provider, "name", "openai-codex"),
-            "display_name": getattr(provider, "display_name", "OpenAI Codex"),
-            "error": "" if available else "La sesión de ChatGPT/Codex no está disponible para imágenes en Hermes.",
-            "error_type": "" if available else "auth_required",
-        })
-        raise SystemExit(0)
-
-    reference_paths = payload.get("reference_image_paths") or payload.get("image_paths") or []
-    if not isinstance(reference_paths, list):
-        reference_paths = []
-    reference_paths = [str(path) for path in reference_paths if str(path or "").strip()]
-    base_kwargs = {
-        "prompt": payload.get("prompt") or "",
-        # The provider contract uses literal ratios, not the broker's
-        # internal square/portrait/landscape enum names.
-        "aspect_ratio": payload.get("aspect_ratio") or "1:1",
-    }
-    used_reference_arg = ""
-    if reference_paths:
-        try:
-            signature = inspect.signature(provider.generate)
-            params = signature.parameters
-            accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
-        except Exception:
-            params = {}
-            accepts_kwargs = False
-        candidate_args = []
-        for name in ("reference_image_paths", "image_paths", "input_image_paths", "reference_images", "input_images", "images"):
-            if accepts_kwargs or name in params:
-                candidate_args.append(name)
-        if not candidate_args:
-            respond({
-                "success": False,
-                "error": "El proveedor de imágenes de Hermes no expone adjuntos de referencia en esta instalación.",
-                "error_type": "reference_images_unsupported",
-                "reference_image_count": len(reference_paths),
-            })
-            raise SystemExit(0)
-        last_type_error = None
-        result = None
-        for name in dict.fromkeys(candidate_args):
-            kwargs = dict(base_kwargs)
-            kwargs[name] = reference_paths
-            try:
-                result = provider.generate(**kwargs)
-                used_reference_arg = name
-                break
-            except TypeError as exc:
-                last_type_error = exc
-                continue
-        if result is None:
-            respond({
-                "success": False,
-                "error": str(last_type_error or "El proveedor de imágenes no aceptó imágenes de referencia."),
-                "error_type": "reference_images_unsupported",
-                "reference_image_count": len(reference_paths),
-            })
-            raise SystemExit(0)
-    else:
-        result = provider.generate(**base_kwargs)
-    if pool_auth_path:
-        from codex_oauth_session import mirror_back_to_root
-        mirror_back_to_root(pool_auth_path)
-    if isinstance(result, dict):
-        result.setdefault("reference_image_count", len(reference_paths))
-        result.setdefault("reference_image_arg", used_reference_arg)
-    respond(result if isinstance(result, dict) else {
-        "success": False,
-        "error": "Hermes devolvió una respuesta inesperada al generar la imagen.",
-        "error_type": "provider_contract",
-    })
-except Exception as exc:
-    try:
-        if "pool_auth_path" in locals() and pool_auth_path:
-            from codex_oauth_session import mirror_back_to_root
-            mirror_back_to_root(pool_auth_path)
-    except Exception:
-        pass
+    from codex_oauth_images import handle_image_bridge_payload
+    respond(handle_image_bridge_payload(payload))
+except Exception:
     respond({
         "success": False,
-        "error": str(exc),
-        "error_type": type(exc).__name__,
+        "error": "Codex Images direct transport is unavailable.",
+        "error_type": "provider_unavailable",
     })
 """
 
@@ -2392,6 +2287,7 @@ def run_hermes_image_bridge(payload, timeout=540, config=None, image_model="", c
         env["HERMES_HOME"] = home
         env["CODEX_HOME"] = home
         payload = dict(payload, pool_oauth=True)
+    payload = dict(payload, http_timeout_seconds=max(10, min(270, int(timeout or 270) - 5)))
     command = [python, "-c", HERMES_IMAGE_BRIDGE_SCRIPT]
     try:
         completed = subprocess.run(
@@ -2430,13 +2326,11 @@ def run_hermes_image_bridge(payload, timeout=540, config=None, image_model="", c
 def call_codex_image_native(prompt, timeout=270, model=None, output_root=None,
                             output_name="creative", reference_image_paths=None,
                             purpose="ad_creative", codex_home=None):
-    """Generate through r99's native Hermes image provider for one pool slot.
+    """Generate through the standalone Codex Images OAuth endpoint for one slot.
 
-    The selected slot is authenticated through Hermes' normal ``openai-codex``
-    OAuth provider.  It never invokes ``codex exec`` and it does not alter the
-    provider's Responses payload.  Protected real photos are handled by the
-    hybrid compositor before this boundary; any optional reference here is a
-    separately approved style asset.
+    Hermes owns token storage/refresh only. The request itself goes straight to
+    ``/codex/images/generations`` or ``/codex/images/edits`` and never starts a
+    Responses/chat-model turn or ``codex exec``.
     """
     request = str(prompt or "").strip()
     if not request or codex_home is None:
@@ -2465,27 +2359,16 @@ def call_codex_image_native(prompt, timeout=270, model=None, output_root=None,
     if result.get("success") and result.get("image"):
         published = publish_generated_image(result["image"], output_root=output_root,
                                             output_name=output_name, batch_prefix="codex")
-        return {**published, "backend": "hermes-openai-codex",
-                "provider": "openai-codex", "model": result.get("model"),
+        return {**published, "backend": "codex-oauth-images-direct",
+                "provider": result.get("provider", "openai-codex-images"), "model": result.get("model"),
                 "reference_image_count": result.get("reference_image_count", 0)}
     category = classify_image_failure(result.get("error"), result.get("error_type"),
-                                      backend="hermes-openai-codex", provider="openai-codex")
-    # A native provider's generic 429 proves a limit, not which subscription
-    # allowance it belongs to. Do not mislabel it as the Codex CLI quota.
+                                      backend="codex-oauth-images-direct", provider="openai-codex-images")
     detail = str(result.get("error") or "").lower()
     if category == "unknown" and any(marker in detail for marker in
         ("429", "usage_limit", "usage limit", "rate limit", "rate_limit", "quota")):
         category = "provider_limited"
-    return {"ok": False, "failure_category": category, "backend": "hermes-openai-codex"}
-
-
-CODEX_IMAGE_DIRECT_FALLBACK_ERROR_TYPES = {
-    "modulenotfounderror",
-    "provider_not_registered",
-    "missing_dependency",
-    "reference_images_unsupported",
-    "auth_required",
-}
+    return {"ok": False, "failure_category": category, "backend": "codex-oauth-images-direct"}
 
 
 def hermes_codex_image_status(timeout=10, config=None):
@@ -2494,22 +2377,11 @@ def hermes_codex_image_status(timeout=10, config=None):
     result = run_hermes_image_bridge({"mode": "status"}, timeout=timeout, config=config)
     ok = bool(result.get("success"))
     error_type = str(result.get("error_type") or "").lower()
-    if not ok and error_type in CODEX_IMAGE_DIRECT_FALLBACK_ERROR_TYPES:
-        env = codex_cli_environment(config, use_image_home=True)
-        auth = codex_cli_auth_status(timeout=max(3, min(10, int(timeout or 10))), env=env)
-        if auth.get("ok"):
-            return {
-                "ok": True,
-                "detail": "ChatGPT/Codex listo para imágenes por ruta directa Codex",
-                "error_type": "",
-                "provider": "codex-cli-direct",
-                "raw": {"bridge": result, "direct_auth": auth},
-            }
     return {
         "ok": ok,
-        "detail": "ChatGPT/Codex listo para imágenes" if ok else (result.get("error") or "ChatGPT/Codex no está listo para imágenes"),
+        "detail": "ChatGPT/Codex listo para imágenes por OAuth directo" if ok else (result.get("error") or "ChatGPT/Codex no está listo para imágenes"),
         "error_type": error_type,
-        "provider": result.get("provider", "openai-codex"),
+        "provider": result.get("provider", "openai-codex-images"),
         "raw": result,
     }
 
@@ -2767,7 +2639,7 @@ def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=Non
 
 
 def call_codex_image_cli(prompt, timeout=270, model=None, output_root=None, output_name="creative", reference_image_paths=None, purpose="ad_creative"):
-    """Generate a real image through Hermes' ChatGPT/Codex image provider."""
+    """Generate a real image through the standalone ChatGPT/Codex OAuth Images API."""
     started_at = time.monotonic()
     request = str(prompt or "").strip()
     if not request:
@@ -2799,12 +2671,9 @@ def call_codex_image_cli(prompt, timeout=270, model=None, output_root=None, outp
         # ChatGPT/Codex behavior remains unchanged.
         pass
     config = load_config()
-    # The subscription-native OpenAI-Codex image provider is the primary
-    # route. It calls the image model directly and uses the buyer's image
-    # allowance without starting a Terra/Sol/Luna reasoning session first.
-    # Direct `codex exec` remains only as a compatibility fallback for older
-    # Hermes installations or providers that cannot accept a required
-    # reference image.
+    # Image generation uses the standalone Codex Images OAuth endpoint. Hermes
+    # supplies/refreshes OAuth only; no Terra/Sol/Luna/host-model turn and no
+    # ``codex exec`` fallback is allowed on this path.
     image_config = image_codex_config(config)
     hermes_home = str(getattr(image_config, "hermes_home", "") or "").strip()
     late_image_root = Path(hermes_home).expanduser() / "cache" / "images" if hermes_home else None
@@ -2825,7 +2694,7 @@ def call_codex_image_cli(prompt, timeout=270, model=None, output_root=None, outp
     if bridge.get("success") and bridge.get("image"):
         published = publish_generated_image(bridge["image"], output_root=output_root, output_name=output_name, batch_prefix="codex")
         if not published.get("ok"):
-            return {**published, "bridge": bridge, "backend": "hermes-openai-codex"}
+            return {**published, "bridge": bridge, "backend": "codex-oauth-images-direct"}
         return {
             "ok": True,
             **published,
@@ -2836,9 +2705,9 @@ def call_codex_image_cli(prompt, timeout=270, model=None, output_root=None, outp
             "warning": "",
             "command": bridge.get("command", ["hermes", "image_generate"]),
             "model": bridge.get("model", "gpt-image-2-medium"),
-            "provider": bridge.get("provider", "openai-codex"),
+            "provider": bridge.get("provider", "openai-codex-images"),
             "reference_image_count": bridge.get("reference_image_count", len(safe_references)),
-            "backend": "hermes-openai-codex",
+            "backend": "codex-oauth-images-direct",
         }
     error_type = str(bridge.get("error_type") or "").lower()
     raw_error = bridge.get("error") or "No pude usar la herramienta de imagen de ChatGPT/Codex."
@@ -2862,40 +2731,21 @@ def call_codex_image_cli(prompt, timeout=270, model=None, output_root=None, outp
                     "warning": "La imagen terminó durante la recuperación posterior al tiempo de espera.",
                     "command": bridge.get("command", ["hermes", "image_generate"]),
                     "model": bridge.get("model", "gpt-image-2-medium"),
-                    "provider": bridge.get("provider", "openai-codex"),
+                    "provider": bridge.get("provider", "openai-codex-images"),
                     "reference_image_count": len(safe_references),
-                    "backend": "hermes-openai-codex-late-recovery",
+                    "backend": "codex-oauth-images-direct-late-recovery",
                 }
-    if error_type in CODEX_IMAGE_DIRECT_FALLBACK_ERROR_TYPES:
-        fallback = call_codex_image_cli_direct(
-            prompt,
-            timeout=timeout,
-            model=model,
-            output_root=output_root,
-            output_name=output_name,
-            reference_image_paths=safe_references,
-            purpose=purpose,
-        )
-        fallback.setdefault("bridge_warning", raw_error)
-        fallback.setdefault("bridge_error_type", error_type)
-        if not fallback.get("ok"):
-            fallback.update(_image_failure_metadata(
-                fallback.get("error"), fallback.get("error_type"),
-                backend="codex-cli-direct", provider=fallback.get("provider", "codex-cli-direct"),
-                started_at=started_at,
-            ))
-        return fallback
     result = {
         "ok": False,
         "error": image_generation_error_message(raw_error, error_type),
         "error_type": error_type,
         "bridge": bridge,
         "command": bridge.get("command", ["hermes", "image_generate"]),
-        "backend": "hermes-openai-codex",
+        "backend": "codex-oauth-images-direct",
     }
     result.update(_image_failure_metadata(
-        raw_error, error_type, backend="hermes-openai-codex",
-        provider=bridge.get("provider", "openai-codex"), started_at=started_at,
+        raw_error, error_type, backend="codex-oauth-images-direct",
+        provider=bridge.get("provider", "openai-codex-images"), started_at=started_at,
     ))
     return result
 
@@ -2988,6 +2838,8 @@ def classify_image_failure(error="", error_type="", *, backend="", provider=""):
             "image limit", "image quota", "images limit", "images quota",
             "image generation limit", "image_generation_limit", "gpt-image",
         )):
+            return "chatgpt_images_limit"
+        if "codex-oauth-images-direct" in text or "openai-codex-images" in text:
             return "chatgpt_images_limit"
         # The direct fallback is an actual Codex CLI session.  When it reports
         # a generic rate/usage limit there is no separate ChatGPT Images quota

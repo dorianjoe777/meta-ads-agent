@@ -5728,7 +5728,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 setattr(codex_brand_guides, key, value)
             shutil.rmtree(test_root, ignore_errors=True)
 
-    def test_codex_image_cli_bridge_copies_generated_asset(self):
+    def legacy_codex_image_cli_bridge_copies_generated_asset(self):
         """Test the Codex/Image bridge uses authenticated Codex and publishes a protected asset."""
         print("\nTesting Codex Image CLI Bridge...")
 
@@ -6001,6 +6001,159 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             codex_brand_guides.shutil.which = original_which
             codex_brand_guides.wait_for_generated_image = original_wait_for_image
             codex_brand_guides.call_codex_image_cli_direct = original_direct
+            shutil.rmtree(test_root, ignore_errors=True)
+            shutil.rmtree(reference_dir, ignore_errors=True)
+
+    def test_codex_image_cli_bridge_copies_generated_asset(self):
+        """The production image path is OAuth Images only, never Responses/CLI."""
+        print("\nTesting Direct Codex OAuth Images Bridge...")
+
+        test_root = Path(tempfile.mkdtemp(prefix="codex_oauth_images_bridge_"))
+        generated_root = test_root / "hermes_home" / "cache" / "images"
+        output_root = test_root / "creatives"
+        generated_file = generated_root / "run-001" / "image.png"
+        reference_dir = ROOT_DIR / "output" / "test-codex-oauth-reference"
+        captured = {}
+        original_bridge = codex_brand_guides.run_hermes_image_bridge
+        original_load_config = codex_brand_guides.load_config
+        original_run = codex_brand_guides.subprocess.run
+        original_direct = codex_brand_guides.call_codex_image_cli_direct
+        original_wait_for_image = codex_brand_guides.wait_for_generated_image
+        try:
+            codex_brand_guides.load_config = lambda: type("Cfg", (), {
+                "codex_cli": "codex",
+                "codex_creative_model": "gpt-5.5",
+                "hermes_model": "gpt-5.5",
+                "hermes_cli": "hermes",
+                "hermes_home": str(test_root / "hermes_home"),
+                "agent_brain_provider": "openai_codex",
+                "agent_chat_provider": "hermes",
+                "agent_chat_base_url": "",
+                "codex_image_source": "main_chatgpt",
+                "codex_image_hermes_home": "",
+                "codex_image_hermes_model": "gpt-5.5",
+            })()
+
+            def fake_bridge(payload, **kwargs):
+                captured["payload"] = payload
+                captured["bridge_kwargs"] = kwargs
+                generated_file.parent.mkdir(parents=True, exist_ok=True)
+                generated_file.write_bytes(b"fake png")
+                return {
+                    "success": True,
+                    "image": str(generated_file),
+                    "model": "gpt-image-2-medium",
+                    "provider": "openai-codex-images",
+                    "transport": "images/generations",
+                    "returncode": 0,
+                }
+
+            direct_attempts = []
+            codex_brand_guides.run_hermes_image_bridge = fake_bridge
+            codex_brand_guides.call_codex_image_cli_direct = lambda *args, **kwargs: direct_attempts.append((args, kwargs)) or {
+                "ok": False, "error": "legacy CLI must remain unreachable"
+            }
+            result = codex_brand_guides.call_codex_image_cli(
+                "Genera un anuncio 4:5", output_root=output_root, output_name="anuncio-prueba"
+            )
+            self.assert_true(result["ok"] is True and Path(result["image_path"]).exists(), "Direct OAuth Images publishes the generated asset")
+            self.assert_true(result.get("backend") == "codex-oauth-images-direct" and result.get("provider") == "openai-codex-images", "Image generation reports the standalone OAuth Images backend")
+            self.assert_true(captured["payload"]["aspect_ratio"] == "4:5", "Direct OAuth Images preserves the requested aspect ratio")
+            self.assert_true(captured["bridge_kwargs"].get("timeout") == 270, "Direct OAuth Images stays below the MCP timeout ceiling")
+            self.assert_true(not direct_attempts, "Healthy image generation never invokes Codex CLI")
+
+            late_file = generated_root / "run-late" / "image.png"
+            codex_brand_guides.run_hermes_image_bridge = lambda payload, **kwargs: {
+                "success": False, "error": "timeout", "error_type": "timeout"
+            }
+
+            def fake_wait_for_image(**kwargs):
+                late_file.parent.mkdir(parents=True, exist_ok=True)
+                late_file.write_bytes(b"late png")
+                return late_file
+
+            codex_brand_guides.wait_for_generated_image = fake_wait_for_image
+            recovered = codex_brand_guides.call_codex_image_cli(
+                "Genera un post orgánico 4:5", output_root=output_root,
+                output_name="post-recuperado", purpose="daily_social_post"
+            )
+            self.assert_true(recovered["ok"] is True and recovered.get("backend") == "codex-oauth-images-direct-late-recovery", "A late standalone image is recovered without starting a chat model")
+
+            def fake_unauth_bridge(payload, **kwargs):
+                return {"success": False, "error": "OAuth unavailable", "error_type": "auth_required"}
+
+            codex_brand_guides.run_hermes_image_bridge = fake_unauth_bridge
+            direct_attempts.clear()
+            unauth = codex_brand_guides.call_codex_image_cli("Genera un anuncio", output_root=output_root)
+            self.assert_true(unauth["ok"] is False and unauth.get("backend") == "codex-oauth-images-direct", "Missing image OAuth fails on the standalone image path")
+            self.assert_true(not direct_attempts, "Missing image OAuth never falls back to codex exec")
+            direct_status = codex_brand_guides.hermes_codex_image_status(timeout=5, config=codex_brand_guides.load_config())
+            self.assert_true(direct_status["ok"] is False, "Image readiness does not borrow Codex CLI login status")
+
+            reference_dir.mkdir(parents=True, exist_ok=True)
+            reference_image = reference_dir / "reference.png"
+            reference_image.write_bytes(b"\x89PNG\r\n\x1a\nreference")
+            output_with_reference = test_root / "creatives-with-reference"
+
+            def fake_reference_bridge(payload, **kwargs):
+                captured["reference_payload"] = payload
+                generated = generated_root / "run-refs" / "image.png"
+                generated.parent.mkdir(parents=True, exist_ok=True)
+                generated.write_bytes(b"fake reference png")
+                return {
+                    "success": True,
+                    "image": str(generated),
+                    "model": "gpt-image-2-medium",
+                    "provider": "openai-codex-images",
+                    "transport": "images/edits",
+                    "returncode": 0,
+                    "reference_image_count": len(payload.get("reference_image_paths") or []),
+                    "reference_image_arg": "images",
+                }
+
+            codex_brand_guides.run_hermes_image_bridge = fake_reference_bridge
+            referenced = codex_brand_guides.call_codex_image_cli(
+                "Usa la referencia adjunta para crear una variación",
+                output_root=output_with_reference, output_name="oauth-ref",
+                reference_image_paths=[reference_image],
+            )
+            self.assert_true(referenced["ok"] is True and referenced.get("backend") == "codex-oauth-images-direct", "Reference images stay on the standalone OAuth edit endpoint")
+            self.assert_true(str(reference_image) in captured["reference_payload"]["reference_image_paths"], "Reference paths reach the standalone image bridge")
+            self.assert_true(referenced.get("reference_image_count") == 1, "Standalone image edits report attached reference count")
+
+            codex_brand_guides.run_hermes_image_bridge = lambda payload, **kwargs: {
+                "success": False,
+                "error": "reference images not supported",
+                "error_type": "reference_images_unsupported",
+            }
+            direct_attempts.clear()
+            unsupported = codex_brand_guides.call_codex_image_cli(
+                "Usa la referencia adjunta", output_root=output_with_reference,
+                reference_image_paths=[reference_image],
+            )
+            self.assert_true(unsupported["ok"] is False, "Unsupported image edits fail closed")
+            self.assert_true(not direct_attempts, "Unsupported image edits never invoke Codex CLI")
+
+            bridge_env = {}
+            codex_brand_guides.run_hermes_image_bridge = original_bridge
+
+            def fake_bridge_run(command, **kwargs):
+                bridge_env.update(kwargs.get("env") or {})
+                return type("Result", (), {
+                    "returncode": 0,
+                    "stdout": '{"success": false, "error": "status only"}\n',
+                    "stderr": "",
+                })()
+
+            codex_brand_guides.subprocess.run = fake_bridge_run
+            codex_brand_guides.run_hermes_image_bridge({"mode": "status"}, config=codex_brand_guides.load_config())
+            self.assert_true(bridge_env.get("HERMES_HOME") == str(test_root / "hermes_home"), "Direct image OAuth reuses the configured ChatGPT/Codex home")
+        finally:
+            codex_brand_guides.run_hermes_image_bridge = original_bridge
+            codex_brand_guides.load_config = original_load_config
+            codex_brand_guides.subprocess.run = original_run
+            codex_brand_guides.call_codex_image_cli_direct = original_direct
+            codex_brand_guides.wait_for_generated_image = original_wait_for_image
             shutil.rmtree(test_root, ignore_errors=True)
             shutil.rmtree(reference_dir, ignore_errors=True)
 

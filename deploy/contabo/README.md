@@ -236,15 +236,17 @@ quota or image-limit failure. The failed account enters its per-account
 cooldown, and no further attempt is made against it during that cooldown.
 Tenants remain pinned to `admira-ia:r90` while this central canary is pending.
 
-The shared image route uses Hermes' native `openai-codex` image provider,
-not `codex exec`. A private Python child selects exactly one account home and
-uses the same direct-provider contract as r99; it only mirrors that slot's
-OAuth session into Hermes before and after the provider call. Buyer-owned real
-photos and official logos stay out of the provider and are composed locally by
-the hybrid creative flow. It never falls back to CLI or a tenant/global account. Native provider limits
-are reported as safe categories; a generic 429 does not establish which
-subscription allowance was exhausted. The account lock covers OAuth refresh
-and generation, including mirroring a refreshed session before a long request.
+The shared image route uses the standalone ChatGPT/Codex OAuth Images transport:
+`/backend-api/codex/images/generations` for generation and
+`/backend-api/codex/images/edits` for approved reference images. Hermes owns
+OAuth storage and refresh only. The request never starts a Responses/chat-model
+turn and never invokes `codex exec`. A private Python child selects exactly one
+account home, so it cannot fall back to a tenant/global account. Buyer-owned
+protected real photos and official logos remain governed by the hybrid creative
+flow. Image-endpoint limits are reduced to safe categories; credentials,
+provider bodies and prompts are not returned to tenants. The account lock
+covers OAuth refresh and generation, including mirroring a refreshed session
+before a long request.
 
 #### Hosted clean-canary evidence
 
