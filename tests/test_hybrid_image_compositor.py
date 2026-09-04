@@ -14,12 +14,24 @@ if Image is not None:
         choose_key_colors,
         compose_overlay,
         composite_logo,
+        HybridMaskMissingError,
         prepare_logo,
     )
 
 
 @unittest.skipIf(Image is None, "Pillow is required by the image runtime")
 class HybridImageCompositorTests(unittest.TestCase):
+    def test_missing_mask_uses_stable_typed_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            overlay = root / "overlay.png"
+            source = root / "source.png"
+            Image.new("RGB", (20, 20), "white").save(overlay)
+            Image.new("RGB", (10, 10), "red").save(source)
+            with self.assertRaises(HybridMaskMissingError) as caught:
+                compose_overlay(overlay, [{"slot_id": "hero", "source": source, "key_rgb": (255, 0, 255)}], root / "out.png")
+            self.assertEqual(caught.exception.code, "composition_mask_missing")
+
     def test_key_selection_excludes_green_brand_and_supports_six(self):
         keys = choose_key_colors(6, [(20, 180, 40), (255, 255, 255), (20, 20, 20)])
         self.assertEqual(len(keys), 6)
@@ -45,6 +57,10 @@ class HybridImageCompositorTests(unittest.TestCase):
         self.assertIn("slot_id=before", prompt)
         self.assertIn("#FF00FF", prompt)
         self.assertIn("Do not use any saved style reference", prompt)
+        self.assertIn("Never draw, recreate, infer, stylize, retouch, or reconstruct the real subject", prompt)
+        self.assertIn("pixel-locked", prompt)
+        self.assertIn("FINAL OUTPUT CHECK", prompt)
+        self.assertIn("never render a substitute subject", prompt)
         self.assertIn("Detailing Premium", prompt)
         self.assertIn("Do not place any text, letters, numbers, labels", prompt)
         self.assertIn("fully outside the slot", prompt)

@@ -19,6 +19,17 @@ from PIL import Image, ImageEnhance
 RGB = tuple[int, int, int]
 Box = tuple[int, int, int, int]
 
+
+class HybridMaskMissingError(ValueError):
+    """Raised when a required keyed slot has no recoverable mask."""
+
+    code = "composition_mask_missing"
+
+    def __init__(self, slot_id: Any):
+        self.slot_id = slot_id
+        super().__init__(f"{self.code}: missing mask for slot {slot_id}")
+
+
 _KEY_CANDIDATES: tuple[RGB, ...] = (
     (255, 0, 255), (0, 255, 255), (255, 255, 0), (0, 0, 255),
     (255, 96, 0), (128, 0, 255), (255, 0, 128), (0, 255, 160),
@@ -216,7 +227,7 @@ def compose_overlay(
         if not source_path.exists():
             raise FileNotFoundError(source_path)
         if not mask:
-            raise ValueError(f"key colour missing for slot {slot.get('slot_id', index + 1)}")
+            raise HybridMaskMissingError(slot.get("slot_id", index + 1))
         components = sorted(_components(set(mask)), key=len, reverse=True)
         chosen = components[0]
         area_ratio = len(chosen) / (base.width * base.height)
@@ -389,8 +400,9 @@ def build_overlay_prompt(
             f"Reserve a clean official-logo safe zone in the {readable_zone} corner, sized for a logo up to roughly 22% of canvas width with proportional height. "
             "Keep all text, CTA elements, media slots, faces, products, and critical artwork outside that zone. Continue the surrounding background naturally through it, but keep it visually calm and high-contrast. Do not draw a logo, logo-like symbol, placeholder, box, label, or watermark there; the application will place the exact official transparent logo programmatically after generation."
         )
-    lines.append("Replaceable media windows are EMPTY RESERVED SLOTS. Do not place any text, letters, numbers, labels, icons, logos, borders, patterns, gradients, textures, shadows, glow, or artwork inside a slot. Put every label (including ANTES/DESPUÉS and service names) fully outside the slot, in the surrounding composition, with visible separation.")
-    lines.append("Use each key colour exactly once, as one uninterrupted contiguous flat solid fill per slot, and nowhere else in the artwork. Keep every other graphic and every character visibly distinct from every key colour; do not punch holes or add marks inside a slot.")
+    lines.append("CRITICAL HYBRID COMPOSITING CONTRACT: Never draw, recreate, infer, stylize, retouch, or reconstruct the real subject, product, person, scene, or photograph. The real media is supplied separately and is pixel-locked; your only job is to leave an exact empty chroma slot for the application to insert it later.")
+    lines.append("Replaceable media windows are EMPTY RESERVED SLOTS. Do not place any text, letters, numbers, labels, icons, logos, borders, patterns, gradients, textures, shadows, glow, or artwork inside a slot. Put every label (including ANTES/DESPUÉS and service names) fully outside the slot, in the surrounding composition, with visible separation. Do not depict even a placeholder version of the real subject inside or over a slot.")
+    lines.append("Use each key colour exactly once, as one uninterrupted contiguous flat solid fill per slot, and nowhere else in the artwork. Keep every other graphic and every character visibly distinct from every key colour; do not punch holes or add marks inside a slot. The key-colour region must remain a clean, solid, uninterrupted fill from edge to edge of each reserved slot.")
     for slot in slots:
         colour = tuple(slot["key_rgb"])
         hex_colour = "#%02X%02X%02X" % colour
@@ -411,6 +423,7 @@ def build_overlay_prompt(
         lines.append("Use the one explicitly selected approved graphic-design reference as stylistic inspiration only; never copy its logo or photography.")
     else:
         lines.append("Do not use any saved style reference; develop the visual direction freely.")
+    lines.append("FINAL OUTPUT CHECK: every listed slot must be visibly present as its exact flat key colour. If the creative brief names or describes the protected real subject, represent its intended location only with that keyed slot; never render a substitute subject or a finished photograph there.")
     return "\n".join(lines)
 
 

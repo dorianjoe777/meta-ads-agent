@@ -101,6 +101,7 @@ from codex_brand_guides import (
     save_product_guide,
 )
 from hybrid_image_compositor import (
+    HybridMaskMissingError,
     build_image2_overlay_prompt,
     choose_key_colors,
     compose_real_media,
@@ -14016,6 +14017,56 @@ def _hybrid_public_evidence(slots, composition):
     return public_slots, public_composition
 
 
+HYBRID_OVERLAY_INVALID_MESSAGE_ES = (
+    "No pude validar el espacio reservado para insertar tus fotos reales. "
+    "No entregué el creativo; puedes volver a intentarlo cuando quieras."
+)
+HYBRID_OVERLAY_INVALID_MESSAGE_EN = (
+    "I could not validate the reserved area for inserting your real photos. "
+    "I did not deliver the creative; you can try again whenever you like."
+)
+
+
+def _hybrid_overlay_attempt_evidence(attempt, *, provider_ok, composition_pass=None, reason=""):
+    """Return bounded, non-sensitive evidence for one hybrid attempt."""
+    item = {"attempt": int(attempt), "provider_ok": bool(provider_ok)}
+    if composition_pass is not None:
+        item["composition_pass"] = bool(composition_pass)
+    if reason:
+        item["reason"] = str(reason)[:80]
+    return item
+
+
+def _hybrid_overlay_failure_result(keyed_slots, style_evidence, reference_count, attempts):
+    public_slots, _ = _hybrid_public_evidence(keyed_slots, {})
+    return {
+        "ok": False,
+        "blocked": True,
+        "reason": "hybrid_overlay_invalid",
+        "retryable": True,
+        "error": HYBRID_OVERLAY_INVALID_MESSAGE_ES,
+        "message": HYBRID_OVERLAY_INVALID_MESSAGE_ES,
+        "message_en": HYBRID_OVERLAY_INVALID_MESSAGE_EN,
+        "hybrid": {"ok": False, "slots": public_slots, "style_reference": style_evidence,
+                    "provider_reference_count": reference_count, "attempts": attempts},
+    }
+
+
+def _remove_hybrid_candidate(path, *, remove_candidate=True):
+    """Remove only provider/candidate files rooted in creative storage."""
+    if not path:
+        return
+    try:
+        resolved = Path(str(path)).resolve(strict=True)
+        resolved.relative_to(CREATIVE_ASSET_ROOT.resolve())
+        resolved.unlink()
+        if remove_candidate:
+            candidate = resolved.with_name(resolved.stem + "-composited.png")
+            candidate.unlink(missing_ok=True)
+    except (FileNotFoundError, OSError, RuntimeError, ValueError):
+        pass
+
+
 def codex_image_generate(payload):
     """Generate a raster creative through the Codex/Image bridge."""
     payload = dict(payload or {})
@@ -14153,41 +14204,70 @@ def codex_image_generate(payload):
             )
             # Deliberately only the opt-in style reference enters the provider.
             hybrid_refs = [style_path] if style_path else []
-            raw_result = call_codex_image_cli(
-                image_prompt,
-                model=load_config().codex_creative_model,
-                output_root=CREATIVE_ASSET_ROOT,
-                output_name=payload.get("output_name") or "hybrid-meta-ad-creative",
-                reference_image_paths=hybrid_refs,
-                purpose=purpose,
+            retry_key_contract = ", ".join(
+                f"{slot.get('slot_id', 'slot')}=#{int(slot['key_rgb'][0]):02X}{int(slot['key_rgb'][1]):02X}{int(slot['key_rgb'][2]):02X}"
+                for slot in keyed_slots
             )
-            result = raw_result if isinstance(raw_result, dict) else {"ok": False, "error": "Image 2 devolvió una respuesta no estructurada."}
-            if not result.get("ok") or not result.get("image_path"):
-                public_slots, _ = _hybrid_public_evidence(keyed_slots, {})
-                result["hybrid"] = {"ok": False, "slots": public_slots, "style_reference": style_evidence, "provider_reference_count": len(hybrid_refs)}
-            else:
-                overlay_path = result["image_path"]
-                final_path = Path(overlay_path).with_name(Path(overlay_path).stem + "-composited.png")
+            attempts = []
+            result = None
+            composition = None
+            final_path = None
+            for attempt in (1, 2):
+                current_prompt = image_prompt if attempt == 1 else (
+                    image_prompt + "\n\nMANDATORY CORRECTION RETRY: the previous output omitted a required hybrid mask. Generate the same surrounding design again, but do not output a finished photograph and do not draw, reconstruct, or substitute any protected real subject. Every required slot must be a large, clearly visible, uninterrupted region filled edge-to-edge with its exact solid key colour, without text, marks, borders, shadows, gradients, texture, or objects. Required exact fills: " + retry_key_contract + ". Before returning the image, verify each exact key-colour region is visibly present."
+                )
+                raw_result = call_codex_image_cli(
+                    current_prompt,
+                    model=load_config().codex_creative_model,
+                    output_root=CREATIVE_ASSET_ROOT,
+                    output_name=payload.get("output_name") or "hybrid-meta-ad-creative",
+                    reference_image_paths=hybrid_refs,
+                    purpose=purpose,
+                )
+                result = raw_result if isinstance(raw_result, dict) else {"ok": False, "error": "Image 2 devolvió una respuesta no estructurada."}
+                overlay_path = result.get("image_path")
+                if not result.get("ok"):
+                    attempts.append(_hybrid_overlay_attempt_evidence(attempt, provider_ok=bool(result.get("ok")), reason="provider_failure"))
+                    _remove_hybrid_candidate(overlay_path)
+                    break
+                if not overlay_path or Path(str(overlay_path)).suffix.lower() != ".png":
+                    attempts.append(_hybrid_overlay_attempt_evidence(attempt, provider_ok=True, reason="provider_invalid_output"))
+                    result = dict(result)
+                    result["ok"] = False
+                    result["reason"] = "hybrid_provider_invalid"
+                    result["error"] = "Image 2 devolvió un archivo no válido para el flujo híbrido."
+                    result.pop("image_path", None)
+                    _remove_hybrid_candidate(overlay_path)
+                    break
+                final_path = Path(str(overlay_path)).with_name(Path(str(overlay_path)).stem + "-composited.png")
                 try:
                     composition = compose_real_media(overlay_path, keyed_slots, final_path)
+                except HybridMaskMissingError as exc:
+                    attempts.append(_hybrid_overlay_attempt_evidence(attempt, provider_ok=True, composition_pass=False, reason=exc.code))
+                    _remove_hybrid_candidate(overlay_path)
+                    if attempt == 1:
+                        continue
+                    result = _hybrid_overlay_failure_result(keyed_slots, style_evidence, len(hybrid_refs), attempts)
+                    break
+                except (OSError, ValueError):
+                    attempts.append(_hybrid_overlay_attempt_evidence(attempt, provider_ok=True, composition_pass=False, reason="composition_failed"))
+                    _remove_hybrid_candidate(overlay_path)
+                    result = _hybrid_overlay_failure_result(keyed_slots, style_evidence, len(hybrid_refs), attempts)
+                    break
                 finally:
-                    # The provider overlay contains chroma placeholders and is
-                    # never a buyer-facing creative. Remove only the exact
-                    # provider file inside the creative root, whether mask
-                    # validation succeeds or fails, so scanners cannot later
-                    # mistake it for a finished asset.
-                    try:
-                        overlay_resolved = Path(overlay_path).resolve(strict=True)
-                        overlay_resolved.relative_to(CREATIVE_ASSET_ROOT.resolve())
-                        overlay_resolved.unlink()
-                    except (FileNotFoundError, OSError, RuntimeError, ValueError):
-                        pass
+                    _remove_hybrid_candidate(overlay_path, remove_candidate=False)
                 if not composition.get("pass"):
-                    raise ValueError("La validación de máscaras del diseño híbrido no pasó; no entregaré una composición ambigua.")
+                    attempts.append(_hybrid_overlay_attempt_evidence(attempt, provider_ok=True, composition_pass=False, reason="composition_mask_invalid"))
+                    _remove_hybrid_candidate(final_path)
+                    result = _hybrid_overlay_failure_result(keyed_slots, style_evidence, len(hybrid_refs), attempts)
+                    break
+                attempts.append(_hybrid_overlay_attempt_evidence(attempt, provider_ok=True, composition_pass=True, reason="accepted"))
                 result["image_path"] = str(final_path)
                 result["asset_id"] = str(final_path.resolve().relative_to(CREATIVE_ASSET_ROOT.resolve()))
                 public_slots, public_composition = _hybrid_public_evidence(keyed_slots, composition)
-                result["hybrid"] = {"ok": True, "layout_intent": layout, "slots": public_slots, "composition": public_composition, "style_reference": style_evidence, "provider_reference_count": len(hybrid_refs)}
+                result["hybrid"] = {"ok": True, "layout_intent": layout, "slots": public_slots, "composition": public_composition, "style_reference": style_evidence, "provider_reference_count": len(hybrid_refs), "attempts": attempts}
+                break
+            if result.get("ok") and result.get("hybrid", {}).get("ok"):
                 if include_logo and not official_logo:
                     raise ValueError("Se solicitó el logo oficial, pero no hay un logo clasificado guardado.")
                 if include_logo and official_logo:
@@ -14208,7 +14288,7 @@ def codex_image_generate(payload):
                 result["reusable_content_asset"] = reusable.get("asset")
             if result.get("ok") and result.get("image_path") and result.get("hybrid", {}).get("ok") and turn_capability:
                 _consume_hybrid_turn_asset_capability(requested_asset_ids)
-            log_action("codex_image_generate", {"purpose": purpose, "hybrid": True, "ok": result.get("ok"), "asset_id": result.get("asset_id", "")}, "completed" if result.get("ok") else "blocked")
+            log_action("codex_image_generate", {"purpose": purpose, "hybrid": True, "ok": result.get("ok"), "asset_id": result.get("asset_id", ""), "attempts": attempts}, "completed" if result.get("ok") else "blocked")
             if result.get("ok"):
                 retention = recent_generated_creatives(when="last_3_days", limit=24, cleanup=True)
                 result["recent_recovery"] = {
@@ -20027,6 +20107,17 @@ def handle_codex_image_generate_tool(arguments, chat_payload, tool):
             chat_reply(chat_payload, hybrid_message, hybrid_message),
             blocked=True,
             reason="hybrid_required",
+            result=result,
+        )
+    if result.get("reason") == "hybrid_overlay_invalid":
+        message_es = result.get("message") or result.get("error") or HYBRID_OVERLAY_INVALID_MESSAGE_ES
+        message_en = result.get("message_en") or HYBRID_OVERLAY_INVALID_MESSAGE_EN
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, message_es, message_en),
+            blocked=True,
+            reason="hybrid_overlay_invalid",
             result=result,
         )
     return agent_action_result(

@@ -121,9 +121,6 @@ class HybridImageDashboardIntegrationTests(unittest.TestCase):
         def invalid_provider(_prompt, **kwargs):
             Path(kwargs["output_root"]).mkdir(parents=True, exist_ok=True)
             canvas = Image.new("RGB", (240, 180), (18, 24, 36))
-            draw = ImageDraw.Draw(canvas)
-            draw.rectangle((20, 20, 180, 160), fill=(255, 0, 255))
-            draw.rectangle((200, 5, 230, 35), fill=(255, 0, 255))
             canvas.save(provider_overlay)
             return {"ok": True, "image_path": str(provider_overlay)}
 
@@ -143,9 +140,161 @@ class HybridImageDashboardIntegrationTests(unittest.TestCase):
              patch.object(dashboard, "call_codex_image_cli", side_effect=invalid_provider):
             result = dashboard.codex_image_generate(payload)
         self.assertFalse(result["ok"], result)
-        self.assertIn("máscaras", result["error"])
+        self.assertEqual(result["reason"], "hybrid_overlay_invalid")
+        self.assertTrue(result["retryable"])
+        self.assertEqual(len(result["hybrid"]["attempts"]), 2)
+        self.assertNotIn("key colour missing", json.dumps(result, ensure_ascii=False).lower())
         self.assertFalse(provider_overlay.exists())
         self.assertFalse(false_final.exists())
+
+    def test_first_invalid_overlay_is_deleted_and_second_same_source_succeeds(self):
+        calls = []
+
+        def retry_provider(prompt, **kwargs):
+            calls.append((prompt, list(kwargs.get("reference_image_paths") or [])))
+            out = Path(kwargs["output_root"]) / "retry-overlay.png"
+            canvas = Image.new("RGB", (240, 180), (18, 24, 36))
+            draw = ImageDraw.Draw(canvas)
+            if len(calls) == 1:
+                pass
+            else:
+                draw.rectangle((20, 20, 220, 160), fill=(255, 0, 255))
+            canvas.save(out)
+            return {"ok": True, "image_path": str(out)}
+
+        payload = {
+            "request": "Diseño con una foto real", "purpose": "ad_creative",
+            "layout_intent": "hero",
+            "real_media": [{"slot_id": "hero", "content_asset_id": "photo-before", "role": "hero"}],
+            "style_reference": {"mode": "none"}, "include_logo": False,
+        }
+        with patch.object(dashboard, "load_content_asset_library", return_value=self.library), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("", "test")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "creative_strategy_readiness", return_value={"ready": True}), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "call_codex_image_cli", side_effect=retry_provider):
+            result = dashboard.codex_image_generate(payload)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][1], calls[1][1])
+        self.assertIn("MANDATORY CORRECTION RETRY", calls[1][0])
+        self.assertIn("hero=#FF00FF", calls[1][0])
+        self.assertTrue(result["hybrid"]["composition"]["pass"])
+        self.assertFalse((self.root / "retry-overlay.png").exists())
+
+    def _hero_payload(self):
+        return {
+            "request": "Diseño con una foto real", "purpose": "ad_creative",
+            "layout_intent": "hero",
+            "real_media": [{"slot_id": "hero", "content_asset_id": "photo-before", "role": "hero"}],
+            "style_reference": {"mode": "none"}, "include_logo": False,
+        }
+
+    def test_extra_component_fails_closed_without_retry(self):
+        calls = []
+
+        def provider(_prompt, **kwargs):
+            calls.append(True)
+            out = Path(kwargs["output_root"]) / "extra-component.png"
+            canvas = Image.new("RGB", (240, 180), (18, 24, 36))
+            draw = ImageDraw.Draw(canvas)
+            draw.rectangle((20, 20, 180, 160), fill=(255, 0, 255))
+            draw.rectangle((200, 5, 230, 35), fill=(255, 0, 255))
+            canvas.save(out)
+            return {"ok": True, "image_path": str(out)}
+
+        with patch.object(dashboard, "load_content_asset_library", return_value=self.library), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("", "test")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "creative_strategy_readiness", return_value={"ready": True}), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "call_codex_image_cli", side_effect=provider):
+            result = dashboard.codex_image_generate(self._hero_payload())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "hybrid_overlay_invalid")
+        self.assertEqual(len(calls), 1)
+        self.assertFalse((self.root / "extra-component.png").exists())
+
+    def test_provider_failure_is_not_retried_or_reclassified(self):
+        calls = []
+
+        def provider(_prompt, **_kwargs):
+            calls.append(True)
+            return {"ok": False, "reason": "provider_quota_exhausted", "error": "quota"}
+
+        with patch.object(dashboard, "load_content_asset_library", return_value=self.library), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("", "test")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "creative_strategy_readiness", return_value={"ready": True}), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "call_codex_image_cli", side_effect=provider):
+            result = dashboard.codex_image_generate(self._hero_payload())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "provider_quota_exhausted")
+        self.assertEqual(len(calls), 1)
+        self.assertNotEqual(result.get("reason"), "hybrid_overlay_invalid")
+
+    def test_missing_then_second_provider_failure_preserves_provider_result(self):
+        calls = []
+
+        def provider(_prompt, **kwargs):
+            calls.append(True)
+            if len(calls) == 1:
+                out = Path(kwargs["output_root"]) / "missing-then-provider.png"
+                Image.new("RGB", (240, 180), (18, 24, 36)).save(out)
+                return {"ok": True, "image_path": str(out)}
+            return {"ok": False, "reason": "provider_auth_failed", "error": "auth"}
+
+        with patch.object(dashboard, "load_content_asset_library", return_value=self.library), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("", "test")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "creative_strategy_readiness", return_value={"ready": True}), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "call_codex_image_cli", side_effect=provider):
+            result = dashboard.codex_image_generate(self._hero_payload())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "provider_auth_failed")
+        self.assertEqual(len(calls), 2)
+        self.assertFalse((self.root / "missing-then-provider.png").exists())
+
+    def test_ok_without_png_path_cannot_be_delivered(self):
+        calls = []
+
+        def provider(_prompt, **_kwargs):
+            calls.append(True)
+            return {"ok": True, "image_path": str(self.root / "not-png.jpg")}
+
+        with patch.object(dashboard, "load_content_asset_library", return_value=self.library), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("", "test")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "creative_strategy_readiness", return_value={"ready": True}), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "call_codex_image_cli", side_effect=provider):
+            result = dashboard.codex_image_generate(self._hero_payload())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "hybrid_provider_invalid")
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("image_path", result)
+
+    def test_hybrid_failure_uses_buyer_safe_localized_tool_reply(self):
+        result = {
+            "ok": False,
+            "blocked": True,
+            "reason": "hybrid_overlay_invalid",
+            "error": dashboard.HYBRID_OVERLAY_INVALID_MESSAGE_ES,
+            "message": dashboard.HYBRID_OVERLAY_INVALID_MESSAGE_ES,
+            "message_en": dashboard.HYBRID_OVERLAY_INVALID_MESSAGE_EN,
+        }
+        with patch.object(dashboard, "codex_image_generate", return_value=result):
+            spanish = dashboard.handle_codex_image_generate_tool({}, {"language": "es"}, "codex_image_generate")
+            english = dashboard.handle_codex_image_generate_tool({}, {"language": "en"}, "codex_image_generate")
+        self.assertEqual(spanish["reply"], dashboard.HYBRID_OVERLAY_INVALID_MESSAGE_ES)
+        self.assertEqual(english["reply"], dashboard.HYBRID_OVERLAY_INVALID_MESSAGE_EN)
+        for reply in (spanish["reply"], english["reply"]):
+            self.assertNotIn("key colour missing", reply.lower())
+            self.assertNotIn("otra api", reply.lower())
+            self.assertNotIn("/app/", reply)
 
     def test_layout_counts_and_logo_default_behavior(self):
         payload = {
