@@ -15,6 +15,12 @@ class TrialProviderLifecycleMigrationTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS admira.tenant_provider_credentials", SQL)
         self.assertNotRegex(SQL, r"\bDROP\s+(TABLE|COLUMN)\b")
 
+    def test_lifecycle_constraint_preserves_states_added_by_later_migrations(self):
+        constraint = SQL.split(
+            "ADD CONSTRAINT tenant_entitlements_lifecycle_state_check", 1
+        )[1].split(";", 1)[0]
+        self.assertIn("'grace'", constraint)
+
     def test_all_tenants_get_entitlement_and_new_tenants_are_pending(self):
         self.assertIn("INSERT INTO admira.tenant_entitlements (tenant_id, plan, lifecycle_state)", SQL)
         self.assertIn("FROM admira.tenants AS t", SQL)

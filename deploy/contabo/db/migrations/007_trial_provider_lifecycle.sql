@@ -19,7 +19,7 @@ ALTER TABLE admira.tenant_entitlements
   DROP CONSTRAINT IF EXISTS tenant_entitlements_lifecycle_state_check;
 ALTER TABLE admira.tenant_entitlements
   ADD CONSTRAINT tenant_entitlements_lifecycle_state_check
-  CHECK (lifecycle_state IN ('pending_claim', 'trial', 'trial_expired', 'licensed', 'suspended', 'cancelled'));
+  CHECK (lifecycle_state IN ('pending_claim', 'trial', 'trial_expired', 'grace', 'licensed', 'suspended', 'cancelled'));
 
 -- Existing rows created by migrations 001-006 retain their plan semantics.
 UPDATE admira.tenant_entitlements
