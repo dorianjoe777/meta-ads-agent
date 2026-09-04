@@ -32,7 +32,10 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tenant_turn import MEDIA_RE, run_turn
-from tenantctl import DEFAULT_BASE, compose_argv, lifecycle, status, tenant_path, validate_tenant_id
+from tenantctl import (
+    DEFAULT_BASE, DEFAULT_CENTRAL_IMAGE_EXCHANGE_ROOT, DEFAULT_CENTRAL_IMAGE_KEY_ROOT,
+    compose_argv, lifecycle, status, tenant_path, validate_tenant_id,
+)
 
 
 DEFAULT_SOCKET = Path("/run/admira-runtime-broker/broker.sock")
@@ -93,7 +96,7 @@ print(json.dumps({"ok": bool(result.get("ok"))}))
 HOSTED_IMAGE_ACCESS_FILE = "hosted_image_access.json"
 HOSTED_IMAGE_ROUTES = {"central_sponsored", "personal_chatgpt", "blocked"}
 HOSTED_LIFECYCLE_STATES = {
-    "pending_claim", "trial", "trial_expired", "licensed", "suspended", "cancelled",
+    "pending_claim", "trial", "grace", "trial_expired", "licensed", "suspended", "cancelled",
 }
 
 CRON_RUN_SCRIPT = r'''
@@ -771,6 +774,44 @@ class BrokerCore:
             "cron_jobs": _cron_snapshot(root),
         }
 
+    def _purge(self, tenant_id: str) -> dict[str, object]:
+        """Stop and remove one already-authorized grace tenant workspace.
+
+        The database is the authorization boundary for this action: the
+        scheduler only calls it for rows returned by grace_deletion_candidates.
+        This host-side guard additionally accepts exactly one validated tenant
+        directory and never a wildcard or the tenants base itself.
+        """
+        root = tenant_path(self.tenants_base, tenant_id)
+        with self._admission_lock:
+            if root.exists() or root.is_symlink():
+                details = root.lstat()
+                if root.is_symlink() or not stat.S_ISDIR(details.st_mode):
+                    raise ValueError("tenant_root_invalid")
+                stopped = lifecycle(self.tenants_base, tenant_id, "suspend")
+                if not stopped.get("ok"):
+                    return {"ok": False, "error_code": "runtime_suspend_failed"}
+                shutil.rmtree(root)
+
+            for configured, label in (
+                (os.environ.get("ADMIRA_CENTRAL_IMAGE_KEY_ROOT", str(DEFAULT_CENTRAL_IMAGE_KEY_ROOT)), "central image key"),
+                (os.environ.get("ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT", str(DEFAULT_CENTRAL_IMAGE_EXCHANGE_ROOT)), "central image exchange"),
+            ):
+                parent = Path(configured)
+                if not parent.is_absolute():
+                    raise ValueError(f"{label} root must be absolute")
+                if parent.exists() or parent.is_symlink():
+                    parent_details = parent.lstat()
+                    if parent.is_symlink() or not stat.S_ISDIR(parent_details.st_mode):
+                        raise ValueError(f"{label} root invalid")
+                    child = parent / tenant_id
+                    if child.exists() or child.is_symlink():
+                        child_details = child.lstat()
+                        if child.is_symlink() or not stat.S_ISDIR(child_details.st_mode):
+                            raise ValueError(f"{label} tenant entry invalid")
+                        shutil.rmtree(child)
+        return {"ok": True, "removed": True, "tenant_id": tenant_id}
+
     def handle(self, request: object) -> dict[str, object]:
         if not isinstance(request, dict):
             raise ValueError("invalid_request")
@@ -787,6 +828,8 @@ class BrokerCore:
             if action == "suspend":
                 result = lifecycle(self.tenants_base, tenant_id, "suspend")
                 return {"ok": bool(result.get("ok")), "error_code": "" if result.get("ok") else "runtime_suspend_failed"}
+            if action == "purge":
+                return self._purge(tenant_id)
             if action == "status":
                 result = status(self.tenants_base, tenant_id)
                 valid = bool(result.get("ok"))

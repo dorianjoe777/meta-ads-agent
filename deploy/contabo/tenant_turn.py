@@ -397,7 +397,7 @@ def validate_turn(payload: object) -> dict[str, object]:
         if route not in {"central_sponsored", "personal_chatgpt", "blocked"}:
             raise ValueError("image access route is invalid")
         if lifecycle_state not in {
-            "pending_claim", "trial", "trial_expired", "licensed", "suspended", "cancelled"
+            "pending_claim", "trial", "grace", "trial_expired", "licensed", "suspended", "cancelled"
         }:
             raise ValueError("image access lifecycle state is invalid")
         sponsorship_ends_at = str(raw_image_access.get("image_sponsorship_ends_at") or "").strip()

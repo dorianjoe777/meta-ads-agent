@@ -419,8 +419,11 @@ lifecycle durable. For an account created through the operator dashboard,
 migration `013_operator_trial_provisioning.sql` deliberately supersedes that
 start rule: the exact five-day clock is anchored to the account creation time,
 not the later Telegram claim. Reissuing its link never moves the clock. Expired
-trials are suspended and cannot be bypassed by issuing a new claim; the same
-durable tenant can still be licensed in place.
+trials enter `grace`, are suspended, and cannot be bypassed by issuing a new
+claim. Telegram receives a fixed reminder on entry and every three days for 30
+days; the scheduler then removes the tenant workspace and database record if
+it was not licensed. The operator can explicitly extend a `grace` account to
+return that same tenant to pure `trial`, cancelling pending reminders.
 
 The normal path for a dashboard-created customer is the live **Pruebas** →
 **Licenciadas** conversion: it preserves the tenant, history and Telegram

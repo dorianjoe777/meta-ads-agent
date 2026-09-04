@@ -78,8 +78,10 @@ rutas y assets que se verificaron en el contenedor live permiten:
 2. Asignar una entrada sana del pool Gemini antes de emitir el claim.
 3. Mostrar o reemitir el enlace temporal de Telegram sin mover el vencimiento.
 4. Ampliar a una fecha exacta futura o caducar manualmente la prueba; caducar
-   suspende el runtime de forma fail-closed.
-5. Convertir la misma cuenta, aun vencida, a licenciada con la Gemini API key
+   suspende el runtime de forma fail-closed y abre un periodo `grace` de 30
+   días con avisos Telegram cada tres días.
+5. Ampliar una cuenta en `grace` para devolverla a `trial`, o convertir la
+   misma cuenta, aun vencida, a licenciada con la Gemini API key
    del cliente. El provisioner llama al bridge Vercel, que crea un registro
    idempotente en Upstash; el panel entrega el código una sola vez.
 6. Conservar tenant, historial, binding Telegram y ChatGPT personal. La

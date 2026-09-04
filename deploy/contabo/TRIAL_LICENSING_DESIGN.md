@@ -10,9 +10,13 @@ comprador ni amplía Admira a API pública, CRM, ecommerce, webhooks o MCP.
 ## 1. Resultado esperado
 
 - Cada cliente recibe un tenant privado y durable.
-- El tenant no se reemplaza al terminar la prueba: cambia de estado y conserva
+- El tenant no se reemplaza al terminar la prueba: cambia a `grace` y conserva
   memoria, sesiones, archivos, Meta, cronjobs y el binding recuperable de
-  Telegram.
+  Telegram durante 30 días; después se eliminan el registro y su workspace si
+  no fue licenciado.
+- Durante `grace`, el tenant está suspendido y recibe un aviso de Telegram al
+  entrar y cada tres días. Una ampliación explícita del operador cancela los
+  avisos pendientes y devuelve el mismo tenant a `trial`.
 - La prueba dura cinco días y usa capacidad de Gemini financiada por Admira.
 - Al licenciar, Gemini cambia de forma atómica a una credencial del cliente.
 - La generación de imágenes financiada por Admira dura los mismos cinco días
@@ -37,7 +41,7 @@ El estado comercial no debe confundirse con el origen de cada proveedor.
 | --- | --- | --- | --- |
 | Preparado | `pending_claim` | sin consumo | sin consumo |
 | Prueba activa | `trial` | pool de Admira | servicio central patrocinado |
-| Prueba vencida | `trial_expired` | bloqueado | bloqueado |
+| Periodo de gracia | `grace` | bloqueado | bloqueado |
 | Licenciado, switch central activado | `licensed` | credencial del cliente | servicio central patrocinado |
 | Licenciado, switch central desactivado | `licensed` | credencial del cliente | conexión del cliente mediante `/conectar_chatgpt`, add-on o bloqueado |
 | Suspendido/cancelado | `suspended`/`cancelled` | bloqueado | bloqueado |
@@ -45,9 +49,10 @@ El estado comercial no debe confundirse con el origen de cada proveedor.
 Las transiciones válidas son:
 
 ```text
-pending_claim -> trial -> trial_expired
+pending_claim -> trial -> grace -> eliminado
                     \-> licensed -> suspended/cancelled
-trial_expired ---------------> licensed
+grace ------------------------> licensed
+grace ------------------------> trial (ampliación explícita)
 ```
 
 El flujo histórico de `pending_claim` activa la prueba al consumir el claim de
@@ -110,14 +115,15 @@ En el flujo histórico, consumir el claim inicia `trial_started_at` y fija
 `trial_ends_at = trial_started_at + 5 días`. Para una alta de panel, la misma
 relación se fija en la transacción de creación con
 `trial_started_at = tenant.created_at`; consumir el claim sólo vincula Telegram.
-Un trabajo periódico vence pruebas, drena trabajo en curso y bloquea nuevos
-turns y cronjobs. No debe depender solamente de ocultar comandos en una
-interfaz; la regla debe estar aplicada en el plano de control.
+Un trabajo periódico vence pruebas, bloquea nuevos turns y cronjobs, suspende
+el runtime, encola avisos idempotentes cada tres días y elimina el workspace y
+el registro al terminar los 30 días. No debe depender solamente de ocultar
+comandos en una interfaz; la regla debe estar aplicada en el plano de control.
 
 Los comandos de consulta y reportes de la CLI deben mostrar como mínimo:
 
 - altas de hoy frente al objetivo de tres;
-- pruebas activas, por vencer y vencidas;
+- pruebas activas, por vencer, en `grace` y próximas a borrado;
 - capacidad objetivo de 15 más el margen operativo configurado;
 - salud/cuota de cada proyecto Gemini;
 - cola y cuota del servicio de imágenes;

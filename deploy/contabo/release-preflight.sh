@@ -113,7 +113,9 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   db/migrations/015_telegram_typing_retry_continuity.sql \
   db/migrations/016_central_campaign_compiler.sql \
   db/migrations/017_licensed_central_image_pool_switch.sql \
-  db/validate_licensed_central_image_pool_switch.sql; do
+  db/validate_licensed_central_image_pool_switch.sql \
+  db/migrations/018_trial_grace_lifecycle.sql \
+  db/validate_trial_grace_lifecycle.sql; do
   need_file "$ROOT_DIR/$file"
 done
 
@@ -487,14 +489,25 @@ WHERE n.nspname = 'admira'
       AND column_name = 'image_sponsorship_ends_at'
   )
   AND to_regclass('admira.tenant_provider_credentials') IS NOT NULL
+  AND to_regclass('admira.tenant_grace_reminders') IS NOT NULL
   AND (
-    SELECT count(*) = 4
+    SELECT count(*) = 6
+    FROM information_schema.columns
+    WHERE table_schema = 'admira' AND table_name = 'tenant_entitlements'
+      AND column_name IN ('grace_started_at', 'grace_expires_at',
+                          'grace_next_notification_at', 'grace_notification_sequence',
+                          'grace_runtime_suspended_at', 'lifecycle_state')
+  )
+  AND (
+    SELECT count(*) = 8
     FROM pg_proc AS p
     JOIN pg_namespace AS n ON n.oid = p.pronamespace
     WHERE n.nspname = 'admira'
       AND p.proname IN (
         'resolve_tenant_image_access', 'expire_due_trials',
-        'record_tenant_provider_credential', 'transition_hosted_tenant_to_licensed'
+        'record_tenant_provider_credential', 'transition_hosted_tenant_to_licensed',
+        'enqueue_due_trial_grace_reminders', 'grace_runtime_candidates',
+        'grace_deletion_candidates', 'delete_grace_tenant'
       )
   )
   AND EXISTS (
@@ -678,6 +691,10 @@ else
   grep -q 'admira-ia:r90' "$ROOT_DIR/tenantctl.py" && ok 'tenant image pin is admira-ia:r90' || fail 'tenant image pin is not admira-ia:r90'
   grep -q 'status = '\''active'\''' "$ROOT_DIR/db/migrations/004_active_tenant_runtime_gate.sql" && ok 'active-tenant migration contains gate' || fail 'active-tenant migration gate missing'
   grep -q "p_error_code = 'telegram_rate_limited'" "$ROOT_DIR/db/migrations/005_telegram_rate_limit_retry.sql" && ok 'Telegram rate-limit migration preserves retries' || fail 'Telegram rate-limit retry migration gate missing'
+  grep -q "lifecycle_state = 'grace'" "$ROOT_DIR/db/migrations/018_trial_grace_lifecycle.sql" \
+    && grep -q 'enqueue_due_trial_grace_reminders' "$ROOT_DIR/db/migrations/018_trial_grace_lifecycle.sql" \
+    && ok 'trial grace lifecycle migration is present' \
+    || fail 'trial grace lifecycle migration gate missing'
   grep -q 'CREATE OR REPLACE FUNCTION admira.telegram_update_pending' "$ROOT_DIR/db/migrations/015_telegram_typing_retry_continuity.sql" \
     && grep -q "u.status IN ('received', 'retry')" "$ROOT_DIR/db/migrations/015_telegram_typing_retry_continuity.sql" \
     && grep -q 'TO admira_ingress' "$ROOT_DIR/db/migrations/015_telegram_typing_retry_continuity.sql" \

@@ -119,6 +119,7 @@ class DeliveryStore(Protocol):
 
 
 class SchedulerStore(Protocol):
+    def maintain_trial_lifecycle(self, broker: Broker, *, worker_id: str) -> dict[str, int]: ...
     def claim_jobs(self, *, worker_id: str, limit: int) -> Sequence[ScheduledWork]: ...
     def image_access(self, tenant_id: str) -> dict[str, object]: ...
     def acquire_runtime(self, tenant_id: str, *, holder: str) -> str | None: ...
@@ -472,6 +473,19 @@ class SchedulerWorker:
         self.worker_id = worker_id or f"scheduler-{uuid.uuid4().hex}"
         self.rng = rng or random.Random()
         self.central_image_ready = central_image_ready is True
+
+    def maintain_trial_lifecycle(self) -> dict[str, int]:
+        """Expire, notify, suspend, and remove grace tenants safely.
+
+        Older injected stores may not implement maintenance yet; treating that
+        as a no-op keeps the worker contract compatible while the deployed
+        scheduler rolls forward with the new database migration.
+        """
+        maintain = getattr(self.store, "maintain_trial_lifecycle", None)
+        if not callable(maintain):
+            return {}
+        result = maintain(self.broker, worker_id=self.worker_id)
+        return dict(result) if isinstance(result, dict) else {}
 
     def process_once(self, *, limit: int = 4) -> dict[str, int]:
         completed = retried = busy = deferred = 0

@@ -13,7 +13,7 @@ failures=0
 pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1" >&2; failures=$((failures + 1)); }
 
-expected=(007_trial_provider_lifecycle.sql 008_central_image_jobs.sql 009_telegram_license_recovery.sql 010_operator_gemini_pool.sql 011_operator_dashboard.sql 012_personal_chatgpt_sponsorship.sql 013_operator_trial_provisioning.sql 014_telegram_typing_indicator.sql 015_telegram_typing_retry_continuity.sql 016_central_campaign_compiler.sql 017_licensed_central_image_pool_switch.sql)
+expected=(007_trial_provider_lifecycle.sql 008_central_image_jobs.sql 009_telegram_license_recovery.sql 010_operator_gemini_pool.sql 011_operator_dashboard.sql 012_personal_chatgpt_sponsorship.sql 013_operator_trial_provisioning.sql 014_telegram_typing_indicator.sql 015_telegram_typing_retry_continuity.sql 016_central_campaign_compiler.sql 017_licensed_central_image_pool_switch.sql 018_trial_grace_lifecycle.sql)
 for name in "${expected[@]}"; do
   path="$MIGRATIONS_DIR/$name"
   if [[ -f "$path" && -s "$path" ]]; then pass "present: $name"; else fail "missing or empty: $name"; fi
@@ -62,8 +62,8 @@ fi
 
 # A real database verification is deliberately separate: operators must point
 # psql at a disposable clone, never at the live database, and run the
-# lifecycle validators there after applying 001-017.
+# lifecycle validators there after applying 001-018.
 if (( failures > 0 )); then
   exit 1
 fi
-printf '%s\n' 'Migration chain 007-017 passed read-only checks; no database was changed.'
+printf '%s\n' 'Migration chain 007-018 passed read-only checks; no database was changed.'

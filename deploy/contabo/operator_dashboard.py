@@ -1006,7 +1006,7 @@ class OperatorState:
             if not RUNTIME_KEY_RE.fullmatch(key):
                 continue
             state = self._projection_text(row[2], 32)
-            if state not in {"pending_claim", "trial", "trial_expired"}:
+            if state not in {"pending_claim", "trial", "grace", "trial_expired"}:
                 state = "unknown"
             result.append({
                 "runtime_key": key,
@@ -1082,7 +1082,7 @@ class OperatorState:
         response = self._provisioner_action({
             "action": "expire_trial", "tenant_key": key, "actor_id": "operator-dashboard",
         })
-        return {"ok": True, "runtime_key": key, "lifecycle_state": "trial_expired"}
+        return {"ok": True, "runtime_key": key, "lifecycle_state": "grace"}
 
     def license_trial(self, runtime_key: str, gemini_api_key: str) -> dict[str, Any]:
         key = self._customer_runtime_key(runtime_key)

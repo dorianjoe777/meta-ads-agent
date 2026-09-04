@@ -635,7 +635,7 @@
 
   function lifecycleLabel(value) {
     const labels = {
-      pending_claim: "Sin activar", trial: "Prueba", trial_expired: "Prueba vencida",
+      pending_claim: "Sin activar", trial: "Prueba", grace: "Periodo de gracia", trial_expired: "Prueba vencida",
       licensed: "Con licencia", suspended: "Suspendida", cancelled: "Cancelada",
     };
     return labels[value] || "Desconocido";
@@ -834,15 +834,13 @@
       customer.append(textElement("strong", "", String(item.runtime_key || "")), textElement("span", "table-secondary", String(item.display_name || "")));
       if (kind === "trial") {
         const actions = document.createElement("td");
-        // An expired trial may still become a licensed account with the same
-        // tenant/history, but it can no longer receive a claim, extension, or
-        // second expiry action.  Keep that distinction visible instead of
-        // sending the operator into an avoidable failing request.
+        // A grace account may be licensed or explicitly extended back into a
+        // pure trial. It cannot receive a new claim until that extension.
         const lifecycle = String(item.lifecycle_state || "");
         const actionSet = lifecycle === "trial"
           ? [["claim", "Enlace"], ["extend", "Ampliar"], ["expire", "Caducar"], ["license", "Licenciar"]]
-          : lifecycle === "trial_expired"
-            ? [["license", "Licenciar"]]
+          : lifecycle === "grace" || lifecycle === "trial_expired"
+            ? [["extend", "Ampliar"], ["license", "Licenciar"]]
             : [];
         actionSet.forEach(([action, label]) => {
           const button = textElement("button", "table-action" + (action === "expire" ? " is-danger" : ""), label);

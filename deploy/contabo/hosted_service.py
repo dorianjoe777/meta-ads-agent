@@ -344,6 +344,45 @@ class SchedulerStore:
     def __init__(self, db: Pg) -> None:
         self.db = db
 
+    def maintain_trial_lifecycle(self, broker, *, worker_id: str) -> dict[str, int]:
+        """Run the durable grace lifecycle around the host boundary.
+
+        PostgreSQL decides which tenants are eligible.  The broker owns the
+        tenant Docker workspace, so a grace account is only deleted from the
+        database after its validated host workspace has been stopped/removed.
+        """
+        self.db.query("SELECT admira.expire_due_trials()")
+        queued_rows = self.db.query("SELECT admira.enqueue_due_trial_grace_reminders() AS queued")
+        queued = int(queued_rows[0]["queued"]) if queued_rows else 0
+        suspended = deleted = 0
+        for row in self.db.query("SELECT * FROM admira.grace_runtime_candidates()"):
+            try:
+                result = broker.request({"action": "suspend", "tenant_id": str(row["runtime_key"])})
+            except Exception:
+                continue
+            if isinstance(result, dict) and result.get("ok"):
+                marked = self.db.query(
+                    "SELECT admira.mark_grace_runtime_suspended(%s) AS marked",
+                    (row["tenant_id"],),
+                )
+                if marked and marked[0].get("marked"):
+                    suspended += 1
+        for row in self.db.query("SELECT * FROM admira.grace_deletion_candidates()"):
+            try:
+                result = broker.request({"action": "purge", "tenant_id": str(row["runtime_key"])})
+            except Exception:
+                continue
+            if not isinstance(result, dict) or not result.get("ok"):
+                continue
+            removed = self.db.query(
+                "SELECT admira.delete_grace_tenant(%s) AS deleted",
+                (row["tenant_id"],),
+            )
+            if removed and removed[0].get("deleted"):
+                deleted += 1
+        return {"reminders_queued": queued, "runtimes_suspended": suspended,
+                "tenants_deleted": deleted}
+
     def claim_jobs(self, *, worker_id: str, limit: int):
         # Scheduled work must obey the same five-day boundary as Telegram
         # turns; expired trials are suspended before any job is leased.
@@ -884,7 +923,16 @@ def run_scheduler(*, once: bool = False) -> None:
         SchedulerStore(Pg()), _broker(), central_image_ready=central_image_ready
     ), _stop_event()
     last_idle = 0.0
+    last_lifecycle = 0.0
     while not stop.is_set():
+        if time.monotonic() - last_lifecycle >= 30:
+            try:
+                worker.maintain_trial_lifecycle()
+            except Exception:
+                # Lifecycle work is retried on the next scheduler tick; a
+                # transient database/broker outage must not stop cron jobs.
+                pass
+            last_lifecycle = time.monotonic()
         result = worker.process_once()
         if time.monotonic() - last_idle >= 60:
             worker.suspend_idle_once(idle_seconds=int(os.environ.get("ADMIRA_RUNTIME_IDLE_SECONDS", "900")))

@@ -71,7 +71,7 @@ BEGIN
     SELECT 1 FROM admira.tenants AS t
     JOIN admira.tenant_entitlements AS e ON e.tenant_id = t.id
     WHERE t.id = (SELECT id FROM admira.tenants WHERE external_customer_id = 'trial-cycle-001')
-      AND t.status = 'suspended' AND e.lifecycle_state = 'trial_expired'
+      AND t.status = 'suspended' AND e.lifecycle_state = 'grace'
   ) THEN
     RAISE EXCEPTION 'trial expiry did not suspend tenant and entitlement';
   END IF;

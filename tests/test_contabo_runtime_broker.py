@@ -217,6 +217,19 @@ class RuntimeBrokerTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "runtime_capacity_exhausted"):
                     core._ensure_running("client-003")
 
+    def test_purge_removes_only_the_validated_tenant_workspace(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            (root / "runtime").mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            with patch.object(broker, "lifecycle", return_value={"ok": True}) as suspend:
+                result = core.handle({"action": "purge", "tenant_id": "client-001"})
+            self.assertEqual(result, {"ok": True, "removed": True, "tenant_id": "client-001"})
+            self.assertFalse(root.exists())
+            suspend.assert_called_once_with(base, "client-001", "suspend")
+
     def test_candidate_capacity_uses_six_normal_slots(self):
         with patch.dict(os.environ, {
             "ADMIRA_NORMAL_ACTIVE_TENANTS": "6",
