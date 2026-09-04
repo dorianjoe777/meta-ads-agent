@@ -367,16 +367,28 @@ class SchedulerStore:
                 )
                 if marked and marked[0].get("marked"):
                     suspended += 1
-        for row in self.db.query("SELECT * FROM admira.grace_deletion_candidates()"):
-            try:
-                result = broker.request({"action": "purge", "tenant_id": str(row["runtime_key"])})
-            except Exception:
-                continue
-            if not isinstance(result, dict) or not result.get("ok"):
-                continue
+        deletion_rows = self.db.query(
+            "SELECT * FROM admira.claim_grace_deletion_candidates(%s,%s,%s)",
+            (worker_id, 25, 900),
+        )
+        for row in deletion_rows:
+            claim_id = row["deletion_claim_id"]
+            if not bool(row.get("workspace_purged")):
+                try:
+                    result = broker.request({"action": "purge", "tenant_id": str(row["runtime_key"])})
+                except Exception:
+                    continue
+                if not isinstance(result, dict) or not result.get("ok"):
+                    continue
+                marked = self.db.query(
+                    "SELECT admira.mark_grace_workspace_purged(%s,%s) AS marked",
+                    (row["tenant_id"], claim_id),
+                )
+                if not marked or not marked[0].get("marked"):
+                    continue
             removed = self.db.query(
-                "SELECT admira.delete_grace_tenant(%s) AS deleted",
-                (row["tenant_id"],),
+                "SELECT admira.delete_grace_tenant(%s,%s) AS deleted",
+                (row["tenant_id"], claim_id),
             )
             if removed and removed[0].get("deleted"):
                 deleted += 1

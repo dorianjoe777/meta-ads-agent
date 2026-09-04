@@ -547,4 +547,47 @@ COMMENT ON FUNCTION admira.operator_extend_trial(text, timestamptz, text) IS
 COMMENT ON FUNCTION admira.delete_grace_tenant(uuid) IS
   'Deletes only a suspended tenant whose grace retention deadline has passed; host workspace removal is performed first by the scheduler.';
 
+-- Migration 019 replaces these preliminary read-then-delete APIs with a
+-- claimed, token-fenced protocol. Do not leave the unsafe signatures visible
+-- if a release is interrupted between migration files or this migration is
+-- rerun after 019 has already been installed.
+REVOKE ALL ON FUNCTION admira.grace_deletion_candidates() FROM admira_scheduler;
+REVOKE ALL ON FUNCTION admira.delete_grace_tenant(uuid) FROM admira_scheduler;
+DROP FUNCTION admira.grace_deletion_candidates();
+DROP FUNCTION admira.delete_grace_tenant(uuid);
+
+CREATE OR REPLACE FUNCTION admira.grace_deletion_candidates()
+RETURNS TABLE (tenant_id uuid, runtime_key text, grace_expires_at timestamptz)
+LANGUAGE sql SECURITY DEFINER STABLE SET search_path = admira, pg_catalog
+AS $$
+  SELECT NULL::uuid, NULL::text, NULL::timestamptz WHERE false;
+$$;
+CREATE OR REPLACE FUNCTION admira.delete_grace_tenant(p_tenant_id uuid)
+RETURNS boolean
+LANGUAGE sql SECURITY DEFINER STABLE SET search_path = admira, pg_catalog
+AS $$
+  SELECT false;
+$$;
+ALTER FUNCTION admira.grace_deletion_candidates() OWNER TO admira_control_owner;
+ALTER FUNCTION admira.delete_grace_tenant(uuid) OWNER TO admira_control_owner;
+REVOKE ALL ON FUNCTION admira.grace_deletion_candidates() FROM PUBLIC;
+REVOKE ALL ON FUNCTION admira.delete_grace_tenant(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION admira.grace_deletion_candidates(),
+  admira.delete_grace_tenant(uuid) TO admira_scheduler;
+
+-- A database that already has migration 019 makes grace_cycle_id mandatory.
+-- If this migration is rerun and the following file is interrupted, pause
+-- reminder creation instead of exposing the pre-cycle INSERT implementation.
+CREATE OR REPLACE FUNCTION admira.enqueue_due_trial_grace_reminders()
+RETURNS integer
+LANGUAGE sql SECURITY DEFINER STABLE SET search_path = admira, pg_catalog
+AS $$
+  SELECT 0;
+$$;
+ALTER FUNCTION admira.enqueue_due_trial_grace_reminders() OWNER TO admira_control_owner;
+REVOKE ALL ON FUNCTION admira.enqueue_due_trial_grace_reminders() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION admira.enqueue_due_trial_grace_reminders() TO admira_scheduler;
+COMMENT ON FUNCTION admira.enqueue_due_trial_grace_reminders() IS
+  'Fail-closed handoff stub; migration 019 installs cycle-aware reminder enqueueing.';
+
 COMMIT;

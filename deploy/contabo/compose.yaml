@@ -353,6 +353,8 @@ services:
     build:
       context: .
       dockerfile: Control.Dockerfile
+      args:
+        ADMIRA_BUILD_SHA: "${CONTROL_BUILD_SHA:-unknown}"
     command: ["poller"]
     environment:
       <<: *control-environment
@@ -476,14 +478,14 @@ services:
       ADMIRA_DB_USER: admira_scheduler_login
       ADMIRA_DB_PASSWORD_FILE: /run/secrets/scheduler_db_password
       ADMIRA_BROKER_SOCKET: /run/admira-runtime-broker/broker.sock
-      ADMIRA_BROKER_KEY_FILE: /run/secrets/runtime_broker_key
+      ADMIRA_BROKER_KEY_FILE: /run/secrets/scheduler_broker_key
       ADMIRA_RUNTIME_IDLE_SECONDS: ${ADMIRA_RUNTIME_IDLE_SECONDS:-900}
       # Scheduled image work follows the same fail-closed readiness gate as
       # interactive Telegram turns.
       ADMIRA_CENTRAL_IMAGE_READY: "${ADMIRA_CENTRAL_IMAGE_READY:-false}"
     secrets:
       - scheduler_db_password
-      - runtime_broker_key
+      - scheduler_broker_key
     group_add:
       - "${ADMIRA_BROKER_GID:-19091}"
     volumes:
@@ -545,5 +547,7 @@ secrets:
     file: ./secrets/smtp_password.txt
   runtime_broker_key:
     file: ./secrets/runtime_broker_key.txt
+  scheduler_broker_key:
+    file: ./secrets/scheduler_broker_key.txt
   telegram_bot_token:
     file: ./secrets/telegram_bot_token.txt

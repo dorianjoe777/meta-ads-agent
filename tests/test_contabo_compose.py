@@ -158,13 +158,17 @@ class ContaboComposeTests(unittest.TestCase):
             self.assertIn("telegram_bot_token", token_holder)
             self.assertIn("telegram_egress", token_holder)
             self.assertNotIn("runtime_broker_key", token_holder)
+            self.assertNotIn("scheduler_broker_key", token_holder)
             self.assertNotIn("admira-runtime-broker", token_holder)
         for runtime_holder in (runtime, scheduler):
-            self.assertIn("runtime_broker_key", runtime_holder)
             self.assertIn("admira-runtime-broker", runtime_holder)
             self.assertNotIn("telegram_bot_token", runtime_holder)
             self.assertNotIn("telegram_egress", runtime_holder)
             self.assertIn("ADMIRA_BROKER_GID", runtime_holder)
+        self.assertIn("runtime_broker_key", runtime)
+        self.assertNotIn("scheduler_broker_key", runtime)
+        self.assertIn("scheduler_broker_key", scheduler)
+        self.assertNotIn("runtime_broker_key", scheduler)
         for spool_holder in (poller, delivery):
             self.assertIn("ADMIRA_SPOOL_GID", spool_holder)
         self.assertIn("scale: ${RUNTIME_WORKER_REPLICAS:-1}", runtime)
@@ -245,7 +249,10 @@ class ContaboComposeTests(unittest.TestCase):
     def test_shared_control_image_has_one_build_owner(self):
         poller = self._service("telegram-poller", "runtime-worker")
         self.assertIn("build:\n      context: .\n      dockerfile: Control.Dockerfile", poller)
+        self.assertIn('ADMIRA_BUILD_SHA: "${CONTROL_BUILD_SHA:-unknown}"', poller)
         self.assertEqual(self.text.count("dockerfile: Control.Dockerfile"), 1)
+        dockerfile = (COMPOSE.parent / "Control.Dockerfile").read_text(encoding="utf-8")
+        self.assertIn('org.opencontainers.image.revision="${ADMIRA_BUILD_SHA}"', dockerfile)
 
     def test_broker_installer_restarts_versioned_code(self):
         installer = (COMPOSE.parent / "install-runtime-broker.sh").read_text(encoding="utf-8")
@@ -255,8 +262,11 @@ class ContaboComposeTests(unittest.TestCase):
         self.assertIn('done < "$ROOT_DIR/.env"', installer)
         self.assertNotIn("hosted_gemini_api_key.txt", installer)
         self.assertNotIn("/etc/admira/hosted-gemini-api-key", installer)
+        self.assertIn("runtime-broker-scheduler.key", installer)
+        self.assertIn("scheduler_broker_key.txt", installer)
         bootstrap = (COMPOSE.parent / "bootstrap-control-plane.sh").read_text(encoding="utf-8")
         self.assertNotIn("hosted_gemini_api_key.txt", bootstrap)
+        self.assertIn("scheduler_broker_key", bootstrap)
 
     def test_apply_streams_migrations_from_the_exact_release(self):
         apply_script = (COMPOSE.parent / "apply-control-plane.sh").read_text(encoding="utf-8")

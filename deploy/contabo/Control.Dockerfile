@@ -1,5 +1,10 @@
 FROM python:3.12.11-slim-bookworm
 
+ARG ADMIRA_BUILD_SHA=unknown
+LABEL org.opencontainers.image.title="Admira control plane" \
+      org.opencontainers.image.revision="${ADMIRA_BUILD_SHA}" \
+      org.opencontainers.image.variant="hosted-control-plane"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1

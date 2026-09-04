@@ -20,6 +20,13 @@ class RuntimeBrokerInstallerTests(unittest.TestCase):
         self.assertNotIn("cat \"$BROKER_KEY_SOURCE\"", text)
         self.assertNotIn("docker login", text)
 
+    def test_scheduler_destructive_key_is_installed_separately(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('SCHEDULER_BROKER_KEY_SOURCE="$ROOT_DIR/secrets/scheduler_broker_key.txt"', text)
+        self.assertIn("/etc/admira/runtime-broker-scheduler.key", text)
+        self.assertIn("--scheduler-key-file", text)
+        self.assertIn('cmp -s "$BROKER_KEY_SOURCE" "$SCHEDULER_BROKER_KEY_SOURCE"', text)
+
     def test_systemd_unit_propagates_bounded_adaptive_capacity(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("ADMIRA_NORMAL_ACTIVE_TENANTS", text)

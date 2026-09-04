@@ -203,6 +203,78 @@ class HostedServiceTests(unittest.TestCase):
             ("SELECT * FROM admira.claim_due_scheduled_jobs(%s,%s,%s)", ("scheduler-1", 3, 900)),
         ])
 
+    def test_grace_deletion_is_claimed_marked_and_fenced_before_database_delete(self):
+        class DB:
+            def __init__(self): self.calls = []
+            def query(self, sql, params=()):
+                self.calls.append((sql, params))
+                if "enqueue_due_trial_grace_reminders" in sql:
+                    return [{"queued": 1}]
+                if "claim_grace_deletion_candidates" in sql:
+                    return [{
+                        "tenant_id": "tenant-uuid", "runtime_key": "customer-001",
+                        "deletion_claim_id": "claim-uuid", "workspace_purged": False,
+                    }]
+                if "mark_grace_workspace_purged" in sql:
+                    return [{"marked": True}]
+                if "delete_grace_tenant" in sql:
+                    return [{"deleted": True}]
+                return []
+
+        class Broker:
+            def __init__(self): self.requests = []
+            def request(self, body):
+                self.requests.append(dict(body))
+                return {"ok": True}
+
+        db, broker = DB(), Broker()
+        result = service.SchedulerStore(db).maintain_trial_lifecycle(
+            broker, worker_id="scheduler-1"
+        )
+        self.assertEqual(result, {
+            "reminders_queued": 1, "runtimes_suspended": 0, "tenants_deleted": 1,
+        })
+        self.assertEqual(broker.requests, [{"action": "purge", "tenant_id": "customer-001"}])
+        self.assertIn((
+            "SELECT * FROM admira.claim_grace_deletion_candidates(%s,%s,%s)",
+            ("scheduler-1", 25, 900),
+        ), db.calls)
+        self.assertIn((
+            "SELECT admira.mark_grace_workspace_purged(%s,%s) AS marked",
+            ("tenant-uuid", "claim-uuid"),
+        ), db.calls)
+        self.assertEqual(db.calls[-1], (
+            "SELECT admira.delete_grace_tenant(%s,%s) AS deleted",
+            ("tenant-uuid", "claim-uuid"),
+        ))
+
+    def test_reclaimed_purged_workspace_skips_host_delete_and_finishes_database_delete(self):
+        class DB:
+            def __init__(self): self.calls = []
+            def query(self, sql, params=()):
+                self.calls.append((sql, params))
+                if "enqueue_due_trial_grace_reminders" in sql:
+                    return [{"queued": 0}]
+                if "claim_grace_deletion_candidates" in sql:
+                    return [{
+                        "tenant_id": "tenant-uuid", "runtime_key": "customer-001",
+                        "deletion_claim_id": "claim-2", "workspace_purged": True,
+                    }]
+                if "delete_grace_tenant" in sql:
+                    return [{"deleted": True}]
+                return []
+
+        class Broker:
+            def request(self, _body):
+                raise AssertionError("already-purged workspace must not be purged again")
+
+        db = DB()
+        result = service.SchedulerStore(db).maintain_trial_lifecycle(
+            Broker(), worker_id="scheduler-2"
+        )
+        self.assertEqual(result["tenants_deleted"], 1)
+        self.assertFalse(any("mark_grace_workspace_purged" in sql for sql, _ in db.calls))
+
     def test_scheduler_image_access_fails_closed_and_serializes_deadline(self):
         class DB:
             def __init__(self, rows): self.rows = rows

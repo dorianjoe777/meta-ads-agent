@@ -119,6 +119,12 @@ Un trabajo periódico vence pruebas, bloquea nuevos turns y cronjobs, suspende
 el runtime, encola avisos idempotentes cada tres días y elimina el workspace y
 el registro al terminar los 30 días. No debe depender solamente de ocultar
 comandos en una interfaz; la regla debe estar aplicada en el plano de control.
+Cada entrada a `grace` recibe un `grace_cycle_id` nuevo. El borrado usa un claim
+con token de fencing: mientras exista, toda transición de salida de `grace`
+queda bloqueada; sólo después de que el broker autenticado marque el workspace
+como purgado puede borrarse el tenant con ese mismo token. Un scheduler caído
+puede ser reemplazado tras vencer el lease sin abrir una carrera con una
+ampliación o licencia.
 
 Los comandos de consulta y reportes de la CLI deben mostrar como mínimo:
 

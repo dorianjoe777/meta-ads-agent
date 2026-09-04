@@ -40,6 +40,7 @@ from tenantctl import (
 
 DEFAULT_SOCKET = Path("/run/admira-runtime-broker/broker.sock")
 DEFAULT_KEY_FILE = Path("/etc/admira/runtime-broker.key")
+DEFAULT_SCHEDULER_KEY_FILE = Path("/etc/admira/runtime-broker-scheduler.key")
 DEFAULT_SPOOL = Path("/srv/admira/shared/telegram-spool")
 DEFAULT_NORMAL_ACTIVE_TENANTS = 4
 DEFAULT_HARD_MAX_ACTIVE_TENANTS = 4
@@ -55,6 +56,7 @@ VIDEO_SUFFIXES = {".mp4", ".mov"}
 ALLOWED_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES | {".pdf", ".bin"}
 HOSTED_RESET_REQUEST = "telegram_hosted_reset_request.json"
 HOSTED_RESET_RECEIPT = ".hosted-reset-receipt.json"
+SCHEDULER_ONLY_ACTIONS = frozenset({"purge"})
 
 HOSTED_RESET_SCRIPT = r'''
 import json
@@ -188,6 +190,28 @@ class ReplayWindow:
                 raise ValueError("replayed_request")
             self._seen[nonce] = current
         return body
+
+
+def _verify_broker_request(server: object, envelope: object) -> dict[str, object]:
+    """Authenticate runtime traffic while reserving destructive actions.
+
+    The requested action is untrusted until signature verification succeeds,
+    but it is safe to use it to select a stricter credential.  A runtime key
+    can never authorize a scheduler-only action; the scheduler key may use the
+    ordinary lifecycle operations it needs in addition to purge.
+    """
+    raw_body = envelope.get("body") if isinstance(envelope, dict) else None
+    action = str(raw_body.get("action") or "") if isinstance(raw_body, dict) else ""
+    scheduler_replay = getattr(server, "scheduler_replay")
+    scheduler_key = getattr(server, "scheduler_key")
+    if action in SCHEDULER_ONLY_ACTIONS:
+        return scheduler_replay.verify(envelope, scheduler_key)
+    try:
+        return getattr(server, "replay").verify(envelope, getattr(server, "key"))
+    except ValueError as exc:
+        if str(exc) != "invalid_signature":
+            raise
+    return scheduler_replay.verify(envelope, scheduler_key)
 
 
 def _safe_ref(value: object) -> str:
@@ -879,7 +903,7 @@ class _Handler(socketserver.StreamRequestHandler):
             return
         try:
             envelope = json.loads(line.decode("utf-8"))
-            body = self.server.replay.verify(envelope, self.server.key)  # type: ignore[attr-defined]
+            body = _verify_broker_request(self.server, envelope)
             response = self.server.core.handle(body)  # type: ignore[attr-defined]
         except (ValueError, OSError) as exc:
             code = str(exc) if re.fullmatch(r"[a-z0-9_]{3,80}", str(exc)) else "invalid_request"
@@ -901,7 +925,8 @@ class _Handler(socketserver.StreamRequestHandler):
         self.wfile.write(wire + b"\n")
 
 
-def serve(*, socket_path: Path, key_file: Path, tenants_base: Path, spool_base: Path, socket_gid: int | None = None) -> None:
+def serve(*, socket_path: Path, key_file: Path, scheduler_key_file: Path,
+          tenants_base: Path, spool_base: Path, socket_gid: int | None = None) -> None:
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     socket_path.parent.chmod(0o750)
     instance_lock = _acquire_instance_lock(socket_path.with_name("broker.lock"))
@@ -913,7 +938,9 @@ def serve(*, socket_path: Path, key_file: Path, tenants_base: Path, spool_base: 
             socket_path.unlink()
         server = _ThreadingUnixServer(str(socket_path), _Handler)
         server.key = _load_key(key_file)  # type: ignore[attr-defined]
+        server.scheduler_key = _load_key(scheduler_key_file)  # type: ignore[attr-defined]
         server.replay = ReplayWindow()  # type: ignore[attr-defined]
+        server.scheduler_replay = ReplayWindow()  # type: ignore[attr-defined]
         server.core = BrokerCore(tenants_base=tenants_base, spool_base=spool_base)  # type: ignore[attr-defined]
         os.chmod(socket_path, 0o660)
         if socket_gid is not None:
@@ -933,6 +960,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("command", choices=("serve", "call"))
     result.add_argument("--socket", type=Path, default=Path(os.environ.get("ADMIRA_BROKER_SOCKET", DEFAULT_SOCKET)))
     result.add_argument("--key-file", type=Path, default=Path(os.environ.get("ADMIRA_BROKER_KEY_FILE", DEFAULT_KEY_FILE)))
+    result.add_argument("--scheduler-key-file", type=Path, default=Path(
+        os.environ.get("ADMIRA_SCHEDULER_BROKER_KEY_FILE", DEFAULT_SCHEDULER_KEY_FILE)
+    ))
     result.add_argument("--tenants-base", type=Path, default=Path(os.environ.get("ADMIRA_TENANTS_BASE", DEFAULT_BASE)))
     result.add_argument("--spool-base", type=Path, default=Path(os.environ.get("ADMIRA_TELEGRAM_SPOOL", DEFAULT_SPOOL)))
     result.add_argument("--socket-gid", type=int, default=None)
@@ -942,7 +972,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.command == "serve":
-        serve(socket_path=args.socket, key_file=args.key_file, tenants_base=args.tenants_base,
+        serve(socket_path=args.socket, key_file=args.key_file,
+              scheduler_key_file=args.scheduler_key_file, tenants_base=args.tenants_base,
               spool_base=args.spool_base, socket_gid=args.socket_gid)
         return 0
     try:

@@ -76,6 +76,10 @@ resolve_compose_value() {
       [[ -n "${ADMIRA_OPERATOR_SETUP_CIDRS+x}" ]] && { printf '%s' "$ADMIRA_OPERATOR_SETUP_CIDRS"; return; } ;;
     ADMIRA_PROVISIONER_GID)
       [[ -n "${ADMIRA_PROVISIONER_GID+x}" ]] && { printf '%s' "$ADMIRA_PROVISIONER_GID"; return; } ;;
+    CONTROL_IMAGE)
+      [[ -n "${CONTROL_IMAGE+x}" ]] && { printf '%s' "$CONTROL_IMAGE"; return; } ;;
+    CONTROL_BUILD_SHA)
+      [[ -n "${CONTROL_BUILD_SHA+x}" ]] && { printf '%s' "$CONTROL_BUILD_SHA"; return; } ;;
   esac
   if [[ -r "$ROOT_DIR/.env" ]]; then
     while IFS='=' read -r config_key config_value; do
@@ -115,6 +119,7 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   db/migrations/017_licensed_central_image_pool_switch.sql \
   db/validate_licensed_central_image_pool_switch.sql \
   db/migrations/018_trial_grace_lifecycle.sql \
+  db/migrations/019_trial_grace_deletion_fencing.sql \
   db/validate_trial_grace_lifecycle.sql; do
   need_file "$ROOT_DIR/$file"
 done
@@ -197,6 +202,10 @@ try:
     assert "/etc/admira/tenant-provisioner.key" in mounts
     assert "19094" in {str(item) for item in operator.get("group_add", [])}
     assert all("docker.sock" not in source and "/srv/admira/tenants" not in source for source in mounts)
+    runtime_secrets = {entry["source"] for entry in services["runtime-worker"]["secrets"]}
+    scheduler_secrets = {entry["source"] for entry in services["scheduler-worker"]["secrets"]}
+    assert "runtime_broker_key" in runtime_secrets and "scheduler_broker_key" not in runtime_secrets
+    assert "scheduler_broker_key" in scheduler_secrets and "runtime_broker_key" not in scheduler_secrets
 except (KeyError, TypeError, ValueError, AssertionError):
     sys.exit(1)
 '; then
@@ -208,6 +217,30 @@ if [[ -r "$ROOT_DIR/.env.example" ]] && grep -Eq '^ADMIRA_TELEGRAM_RECOVERY_READ
   ok 'Telegram recovery is disabled by default in .env.example'
 else
   fail 'Telegram recovery must remain disabled by default in .env.example'
+fi
+CONTROL_IMAGE="$(resolve_compose_value CONTROL_IMAGE 'admira-control-plane:r1')"
+CONTROL_BUILD_SHA="$(resolve_compose_value CONTROL_BUILD_SHA 'unknown')"
+if [[ "$MODE" == server ]]; then
+  deployed_marker="$ROOT_DIR/DEPLOYED_COMMIT"
+  if [[ -L "$deployed_marker" || ! -f "$deployed_marker" ]]; then
+    fail 'DEPLOYED_COMMIT must be a regular release marker'
+  else
+    deployed_sha="$(tr -d '[:space:]' < "$deployed_marker")"
+    if [[ "$deployed_sha" =~ ^[0-9a-f]{40}$ \
+       && "$CONTROL_BUILD_SHA" == "$deployed_sha" \
+       && "$CONTROL_IMAGE" == "admira-control-plane:r99-canary-${deployed_sha:0:12}" ]]; then
+      control_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$CONTROL_IMAGE" 2>/dev/null || true)"
+      [[ "$control_revision" == "$deployed_sha" ]] \
+        && ok 'control image revision matches DEPLOYED_COMMIT' \
+        || fail 'control image revision label does not match DEPLOYED_COMMIT'
+    else
+      fail 'control image tag/build SHA must match the exact DEPLOYED_COMMIT'
+    fi
+  fi
+elif grep -q 'org.opencontainers.image.revision="${ADMIRA_BUILD_SHA}"' "$ROOT_DIR/Control.Dockerfile"; then
+  ok 'control image carries an immutable Git revision label'
+else
+  fail 'control image revision label is missing'
 fi
 CENTRAL_IMAGE_PLACEHOLDER='admira-ia-hosted:r99-canary-000000000000'
 CENTRAL_IMAGE_IMAGE="$(resolve_compose_value CENTRAL_IMAGE_IMAGE "$CENTRAL_IMAGE_PLACEHOLDER")"
@@ -380,6 +413,41 @@ else
   if [[ "$MODE" == server ]]; then fail 'Telegram token is absent or empty'; else warn 'Telegram token is intentionally absent in local preparation'; fi
 fi
 
+for broker_secret in runtime_broker_key.txt scheduler_broker_key.txt; do
+  broker_secret_path="$ROOT_DIR/secrets/$broker_secret"
+  if [[ -f "$broker_secret_path" && -s "$broker_secret_path" ]]; then
+    broker_secret_mode=$(stat -c '%a' "$broker_secret_path" 2>/dev/null || stat -f '%Lp' "$broker_secret_path")
+    [[ "$broker_secret_mode" =~ ^0*(600|400)$ ]] \
+      && ok "broker credential is private: $broker_secret" \
+      || fail "broker credential permissions must be 0600 or 0400: $broker_secret"
+  elif [[ "$MODE" == server ]]; then
+    fail "broker credential is absent or empty: $broker_secret"
+  else
+    warn "broker credential is intentionally absent locally: $broker_secret"
+  fi
+done
+if [[ -s "$ROOT_DIR/secrets/runtime_broker_key.txt" \
+   && -s "$ROOT_DIR/secrets/scheduler_broker_key.txt" ]]; then
+  if cmp -s "$ROOT_DIR/secrets/runtime_broker_key.txt" "$ROOT_DIR/secrets/scheduler_broker_key.txt"; then
+    fail 'runtime and scheduler broker credentials must be distinct'
+  else
+    ok 'runtime and scheduler broker credentials are distinct'
+  fi
+fi
+if [[ "$MODE" == server ]]; then
+  broker_exec_start="$(systemctl show admira-runtime-broker.service -p ExecStart --value 2>/dev/null || true)"
+  if [[ "$broker_exec_start" == *"--scheduler-key-file /etc/admira/runtime-broker-scheduler.key"* \
+     && -f /etc/admira/runtime-broker-scheduler.key \
+     && ! -L /etc/admira/runtime-broker-scheduler.key ]]; then
+    installed_scheduler_key_mode=$(stat -c '%a' /etc/admira/runtime-broker-scheduler.key 2>/dev/null || stat -f '%Lp' /etc/admira/runtime-broker-scheduler.key)
+    [[ "$installed_scheduler_key_mode" =~ ^0*600$ ]] \
+      && ok 'runtime broker has a private scheduler-only credential' \
+      || fail 'installed scheduler broker credential must be mode 0600'
+  else
+    fail 'runtime broker is not configured with the scheduler-only credential'
+  fi
+fi
+
 LEGACY_GEMINI_SOURCE="$ROOT_DIR/secrets/hosted_gemini_api_key.txt"
 if [[ -e "$LEGACY_GEMINI_SOURCE" ]]; then
   if [[ "$MODE" == server ]]; then
@@ -496,15 +564,18 @@ WHERE n.nspname = 'admira'
     'SELECT,INSERT,UPDATE,DELETE'
   )
   AND (
-    SELECT count(*) = 6
+    SELECT count(*) = 11
     FROM information_schema.columns
     WHERE table_schema = 'admira' AND table_name = 'tenant_entitlements'
       AND column_name IN ('grace_started_at', 'grace_expires_at',
                           'grace_next_notification_at', 'grace_notification_sequence',
-                          'grace_runtime_suspended_at', 'lifecycle_state')
+                          'grace_runtime_suspended_at', 'grace_cycle_id',
+                          'grace_deletion_claim_id', 'grace_deletion_claimed_at',
+                          'grace_deletion_claimed_by', 'grace_workspace_purged_at',
+                          'lifecycle_state')
   )
   AND (
-    SELECT count(*) = 8
+    SELECT count(DISTINCT p.proname) = 9
     FROM pg_proc AS p
     JOIN pg_namespace AS n ON n.oid = p.pronamespace
     WHERE n.nspname = 'admira'
@@ -512,8 +583,36 @@ WHERE n.nspname = 'admira'
         'resolve_tenant_image_access', 'expire_due_trials',
         'record_tenant_provider_credential', 'transition_hosted_tenant_to_licensed',
         'enqueue_due_trial_grace_reminders', 'grace_runtime_candidates',
-        'grace_deletion_candidates', 'delete_grace_tenant'
+        'claim_grace_deletion_candidates', 'mark_grace_workspace_purged',
+        'delete_grace_tenant'
       )
+  )
+  AND EXISTS (
+    SELECT 1 FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'admira' AND p.proname = 'grace_deletion_candidates'
+      AND pg_get_function_identity_arguments(p.oid) = ''
+      AND pg_get_functiondef(p.oid) LIKE '%WHERE false%'
+  )
+  AND EXISTS (
+    SELECT 1 FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'admira' AND p.proname = 'delete_grace_tenant'
+      AND pg_get_function_identity_arguments(p.oid) = 'p_tenant_id uuid'
+      AND pg_get_functiondef(p.oid) LIKE '%SELECT false%'
+  )
+  AND has_function_privilege(
+    'admira_scheduler',
+    'admira.claim_grace_deletion_candidates(text,integer,integer)',
+    'EXECUTE'
+  )
+  AND has_function_privilege(
+    'admira_scheduler',
+    'admira.mark_grace_workspace_purged(uuid,uuid)',
+    'EXECUTE'
+  )
+  AND has_function_privilege(
+    'admira_scheduler',
+    'admira.delete_grace_tenant(uuid,uuid)',
+    'EXECUTE'
   )
   AND EXISTS (
     SELECT 1 FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace
@@ -699,6 +798,12 @@ else
   grep -q "lifecycle_state = 'grace'" "$ROOT_DIR/db/migrations/018_trial_grace_lifecycle.sql" \
     && grep -q 'enqueue_due_trial_grace_reminders' "$ROOT_DIR/db/migrations/018_trial_grace_lifecycle.sql" \
     && grep -q 'TO admira_control_owner' "$ROOT_DIR/db/migrations/018_trial_grace_lifecycle.sql" \
+    && grep -q 'claim_grace_deletion_candidates' "$ROOT_DIR/db/migrations/019_trial_grace_deletion_fencing.sql" \
+    && grep -q 'grace_workspace_purged_at IS NOT NULL' "$ROOT_DIR/db/migrations/019_trial_grace_deletion_fencing.sql" \
+    && grep -q 'UNIQUE (tenant_id, grace_cycle_id, reminder_no)' "$ROOT_DIR/db/migrations/019_trial_grace_deletion_fencing.sql" \
+    && grep -q 'NULL::timestamptz WHERE false' "$ROOT_DIR/db/migrations/019_trial_grace_deletion_fencing.sql" \
+    && grep -q 'SCHEDULER_ONLY_ACTIONS = frozenset({"purge"})' "$ROOT_DIR/runtime_broker.py" \
+    && grep -q 'scheduler_broker_key' "$ROOT_DIR/compose.yaml" \
     && ok 'trial grace lifecycle migration is present' \
     || fail 'trial grace lifecycle migration gate missing'
   grep -q 'CREATE OR REPLACE FUNCTION admira.telegram_update_pending' "$ROOT_DIR/db/migrations/015_telegram_typing_retry_continuity.sql" \

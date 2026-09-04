@@ -288,8 +288,9 @@ The implementation is split into four independently credentialed processes:
 4. `scheduler-worker` owns no bot token. It claims due Hermes jobs, wakes the
    same tenant runtime through the broker, and puts the result in the outbox.
 
-Only poller/delivery join the outbound Telegram network. Only
-runtime/scheduler receive the broker key and socket group. None mounts
+Only poller/delivery join the outbound Telegram network. Runtime and scheduler
+receive different broker HMAC keys while sharing the socket group: the runtime
+key cannot authorize the destructive `purge` action. None mounts
 `/var/run/docker.sock`; that remains confined to the sandboxed host broker.
 All database roles have function-only permissions and no direct table access.
 
@@ -423,7 +424,11 @@ trials enter `grace`, are suspended, and cannot be bypassed by issuing a new
 claim. Telegram receives a fixed reminder on entry and every three days for 30
 days; the scheduler then removes the tenant workspace and database record if
 it was not licensed. The operator can explicitly extend a `grace` account to
-return that same tenant to pure `trial`, cancelling pending reminders.
+return that same tenant to pure `trial`, cancelling pending reminders. Each
+new grace period has a fresh cycle id, so retained reminder history cannot
+suppress a later cycle. At deletion time the scheduler atomically claims the
+tenant; that claim blocks extension/licensing until the broker confirms the
+workspace purge and the database accepts the same fencing token.
 
 The normal path for a dashboard-created customer is the live **Pruebas** →
 **Licenciadas** conversion: it preserves the tenant, history and Telegram

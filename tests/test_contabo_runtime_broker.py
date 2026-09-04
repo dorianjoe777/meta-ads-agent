@@ -23,6 +23,7 @@ SPEC.loader.exec_module(broker)
 
 
 KEY = b"k" * 32
+SCHEDULER_KEY = b"s" * 32
 
 
 class RuntimeBrokerTests(unittest.TestCase):
@@ -55,7 +56,9 @@ class RuntimeBrokerTests(unittest.TestCase):
     def test_handler_preserves_safe_runtime_errors_but_masks_unexpected_failures(self):
         class FakeServer:
             replay = broker.ReplayWindow()
+            scheduler_replay = broker.ReplayWindow()
             key = KEY
+            scheduler_key = SCHEDULER_KEY
 
             def __init__(self, failure):
                 self.core = type("Core", (), {"handle": lambda _self, _body: (_ for _ in ()).throw(failure)})()
@@ -81,6 +84,39 @@ class RuntimeBrokerTests(unittest.TestCase):
             handler = FakeHandler(failure)
             broker._Handler.handle(handler)
             self.assertEqual(handler.response, {"ok": False, "error_code": expected})
+
+    def test_purge_requires_the_scheduler_only_broker_key(self):
+        class FakeServer:
+            replay = broker.ReplayWindow()
+            scheduler_replay = broker.ReplayWindow()
+            key = KEY
+            scheduler_key = SCHEDULER_KEY
+
+        runtime_purge = broker.sign_body(KEY, {"action": "purge", "tenant_id": "client-001"})
+        with self.assertRaisesRegex(ValueError, "invalid_signature"):
+            broker._verify_broker_request(FakeServer(), runtime_purge)
+
+        scheduler_purge = broker.sign_body(
+            SCHEDULER_KEY, {"action": "purge", "tenant_id": "client-001"}
+        )
+        self.assertEqual(
+            broker._verify_broker_request(FakeServer(), scheduler_purge),
+            {"action": "purge", "tenant_id": "client-001"},
+        )
+
+    def test_scheduler_key_can_run_non_destructive_scheduler_work(self):
+        class FakeServer:
+            replay = broker.ReplayWindow()
+            scheduler_replay = broker.ReplayWindow()
+            key = KEY
+            scheduler_key = SCHEDULER_KEY
+
+        envelope = broker.sign_body(
+            SCHEDULER_KEY, {"action": "run_job", "tenant_id": "client-001"}
+        )
+        self.assertEqual(
+            broker._verify_broker_request(FakeServer(), envelope)["action"], "run_job"
+        )
 
     def test_cron_snapshot_rejects_tenant_symlink(self):
         with tempfile.TemporaryDirectory() as raw:

@@ -8,6 +8,7 @@ BROKER_GID="${ADMIRA_BROKER_GID:-19091}"
 SPOOL_GROUP="${ADMIRA_SPOOL_GROUP:-admira-spool}"
 SPOOL_GID="${ADMIRA_SPOOL_GID:-19092}"
 BROKER_KEY_SOURCE="$ROOT_DIR/secrets/runtime_broker_key.txt"
+SCHEDULER_BROKER_KEY_SOURCE="$ROOT_DIR/secrets/scheduler_broker_key.txt"
 MAX_ACTIVE_TENANTS="${ADMIRA_MAX_ACTIVE_TENANTS:-}"
 NORMAL_ACTIVE_TENANTS="${ADMIRA_NORMAL_ACTIVE_TENANTS:-}"
 HARD_MAX_ACTIVE_TENANTS="${ADMIRA_HARD_MAX_ACTIVE_TENANTS:-}"
@@ -53,8 +54,12 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
   printf 'Service user does not exist: %s\n' "$SERVICE_USER" >&2
   exit 1
 fi
-if [[ ! -s "$BROKER_KEY_SOURCE" ]]; then
+if [[ ! -s "$BROKER_KEY_SOURCE" || ! -s "$SCHEDULER_BROKER_KEY_SOURCE" ]]; then
   printf '%s\n' 'Generate control-plane secrets before installing the broker.' >&2
+  exit 1
+fi
+if cmp -s "$BROKER_KEY_SOURCE" "$SCHEDULER_BROKER_KEY_SOURCE"; then
+  printf '%s\n' 'Runtime and scheduler broker keys must be different.' >&2
   exit 1
 fi
 if [[ ! "$MAX_ACTIVE_TENANTS" =~ ^[1-9][0-9]*$ ]] ||
@@ -97,6 +102,7 @@ install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" /srv/admira/shared/tele
 install -d -m 0770 -o "$SERVICE_USER" -g "$SPOOL_GROUP" /srv/admira/shared/telegram-spool/inbound
 install -d -m 0770 -o "$SERVICE_USER" -g "$SPOOL_GROUP" /srv/admira/shared/telegram-spool/outbound
 install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$BROKER_KEY_SOURCE" /etc/admira/runtime-broker.key
+install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$SCHEDULER_BROKER_KEY_SOURCE" /etc/admira/runtime-broker-scheduler.key
 install -m 0644 /dev/stdin /etc/systemd/system/admira-runtime-broker.service <<UNIT
 [Unit]
 Description=Admira isolated tenant runtime broker
@@ -109,7 +115,7 @@ User=$SERVICE_USER
 Group=$SERVICE_USER
 SupplementaryGroups=docker $BROKER_GROUP $SPOOL_GROUP
 WorkingDirectory=$ROOT_DIR
-ExecStart=/usr/bin/python3 $ROOT_DIR/runtime_broker.py serve --socket-gid $BROKER_GID
+ExecStart=/usr/bin/python3 $ROOT_DIR/runtime_broker.py serve --socket-gid $BROKER_GID --scheduler-key-file /etc/admira/runtime-broker-scheduler.key
 Restart=on-failure
 RestartSec=3
 UMask=0077

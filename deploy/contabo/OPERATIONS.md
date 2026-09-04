@@ -666,6 +666,7 @@ delivery_db_password.txt
 scheduler_db_password.txt
 provisioner_db_password.txt
 runtime_broker_key.txt
+scheduler_broker_key.txt       # HMAC separado; autoriza purge sólo al scheduler
 telegram_bot_token.txt
 recovery_db_password.txt        # runtime integrado; recuperación aún dormida
 email_delivery_db_password.txt  # worker SMTP preparado; perfil aún dormido
@@ -882,8 +883,9 @@ una versión antigua:
    o activar el release. No modificar todavía `DEPLOYED_COMMIT`.
 6. Copiar el release completo a una carpeta nueva y validar allí sus hashes,
    permisos, sintaxis y configuraciones Compose. Actualizar la ruta activa
-   desde esa única carpeta, sin mezclar archivos de releases distintos, y
-   ejecutar:
+   desde esa única carpeta, sin mezclar archivos de releases distintos. En el
+   candidato (nunca en el release activo), fijar `DEPLOYED_COMMIT` y
+   `CONTROL_BUILD_SHA` al mismo SHA completo, y ejecutar:
 
    ```bash
    ./apply-control-plane.sh
@@ -894,10 +896,11 @@ una versión antigua:
    ejecutando Python de la versión anterior en memoria.
 7. Si se cambia `Control.Dockerfile` o código de los workers, construir una vez
    como `telegram-poller`; los otros servicios reutilizan el mismo tag. No se
-   deben lanzar builds paralelos del mismo tag.
+   deben lanzar builds paralelos del mismo tag. La etiqueta OCI `revision` de
+   la imagen debe coincidir con `DEPLOYED_COMMIT`.
 8. Verificar hashes remotos, logs, socket, permisos y `docker compose ps`.
-9. Sólo cuando todas las verificaciones anteriores hayan pasado, escribir el
-   SHA nuevo en `DEPLOYED_COMMIT` mediante reemplazo atómico y conservar el
+9. Sólo cuando todas las verificaciones anteriores hayan pasado, activar el
+   symlink del release completo mediante reemplazo atómico y conservar el
    marcador anterior dentro del backup. Un despliegue fallido nunca debe
    anunciar el candidato como activo.
 10. Sólo después habilitar o reiniciar `buyers` si la prueba controlada pasó.
