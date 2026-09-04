@@ -490,6 +490,11 @@ WHERE n.nspname = 'admira'
   )
   AND to_regclass('admira.tenant_provider_credentials') IS NOT NULL
   AND to_regclass('admira.tenant_grace_reminders') IS NOT NULL
+  AND has_table_privilege(
+    'admira_control_owner',
+    'admira.tenant_grace_reminders',
+    'SELECT,INSERT,UPDATE,DELETE'
+  )
   AND (
     SELECT count(*) = 6
     FROM information_schema.columns
@@ -693,6 +698,7 @@ else
   grep -q "p_error_code = 'telegram_rate_limited'" "$ROOT_DIR/db/migrations/005_telegram_rate_limit_retry.sql" && ok 'Telegram rate-limit migration preserves retries' || fail 'Telegram rate-limit retry migration gate missing'
   grep -q "lifecycle_state = 'grace'" "$ROOT_DIR/db/migrations/018_trial_grace_lifecycle.sql" \
     && grep -q 'enqueue_due_trial_grace_reminders' "$ROOT_DIR/db/migrations/018_trial_grace_lifecycle.sql" \
+    && grep -q 'TO admira_control_owner' "$ROOT_DIR/db/migrations/018_trial_grace_lifecycle.sql" \
     && ok 'trial grace lifecycle migration is present' \
     || fail 'trial grace lifecycle migration gate missing'
   grep -q 'CREATE OR REPLACE FUNCTION admira.telegram_update_pending' "$ROOT_DIR/db/migrations/015_telegram_typing_retry_continuity.sql" \

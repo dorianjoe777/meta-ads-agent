@@ -4,6 +4,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SQL = (ROOT / "deploy/contabo/db/migrations/018_trial_grace_lifecycle.sql").read_text(encoding="utf-8")
+PREFLIGHT = (ROOT / "deploy/contabo/release-preflight.sh").read_text(encoding="utf-8")
 
 
 class TrialGraceLifecycleMigrationTests(unittest.TestCase):
@@ -26,6 +27,17 @@ class TrialGraceLifecycleMigrationTests(unittest.TestCase):
         self.assertIn("grace_deletion_candidates", SQL)
         self.assertIn("delete_grace_tenant", SQL)
         self.assertIn("GRANT EXECUTE ON FUNCTION admira.enqueue_due_trial_grace_reminders()", SQL)
+
+    def test_scheduler_owner_can_access_reminder_ledger_and_preflight_enforces_it(self):
+        self.assertIn(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE admira.tenant_grace_reminders\n  TO admira_control_owner",
+            SQL,
+        )
+        self.assertIn(
+            "has_table_privilege(\n    'admira_control_owner',\n"
+            "    'admira.tenant_grace_reminders',\n    'SELECT,INSERT,UPDATE,DELETE'",
+            PREFLIGHT,
+        )
 
 
 if __name__ == "__main__":
