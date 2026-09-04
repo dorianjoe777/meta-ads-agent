@@ -92,23 +92,32 @@ class CentralCodexAccountPoolTests(unittest.TestCase):
             self.assertEqual(sum(result["ok"] for result in results), 2)
             self.assertEqual(sum(result.get("error_type") == "provider_unavailable" for result in results), 2)
 
-    def test_default_provider_uses_native_images_without_cli_or_raw_output(self):
+    def test_default_provider_uses_terra_cli_with_isolated_pool_home_and_references(self):
         with tempfile.TemporaryDirectory() as raw:
             accounts = self._accounts(Path(raw))
+            work = Path(raw) / "broker-work"
+            work.mkdir()
+            reference = work / "reference.png"
+            reference.write_bytes(b"image")
             pool = CentralCodexAccountPool(accounts)
             with patch.object(
                 brand, "call_codex_image_native",
-                return_value={"ok": False, "failure_category": "provider_limited", "stdout": "secret"},
-            ) as native, patch.object(brand, "call_codex_image_cli_direct") as cli:
+            ) as native, patch.object(
+                brand, "call_codex_image_cli_direct",
+                return_value={"ok": False, "failure_category": "codex_usage_limit", "stdout": "secret"},
+            ) as cli:
                 result = pool._default_provider(
                     "private prompt", codex_home=Path(accounts[0]["codex_home"]),
-                    timeout=1, model=None, output_root=None, output_name="x",
-                    reference_image_paths=(), purpose="ad_creative",
+                    timeout=1, model=None, output_root=work, output_name="x",
+                    reference_image_paths=(str(reference),), purpose="ad_creative",
                 )
-            self.assertEqual(result, {"ok": False, "failure_category": "provider_limited"})
-            native.assert_called_once()
-            self.assertEqual(native.call_args.kwargs["codex_home"], Path(accounts[0]["codex_home"]))
-            cli.assert_not_called()
+            self.assertEqual(result, {"ok": False, "failure_category": "codex_usage_limit"})
+            cli.assert_called_once()
+            self.assertEqual(cli.call_args.kwargs["codex_home"], Path(accounts[0]["codex_home"]))
+            self.assertEqual(cli.call_args.kwargs["model"], "gpt-5.6-terra")
+            self.assertEqual(cli.call_args.kwargs["isolated_reference_root"], work)
+            self.assertEqual(cli.call_args.kwargs["reference_image_paths"], (str(reference),))
+            native.assert_not_called()
             self.assertNotIn("secret", repr(result))
 
     def test_three_account_pool_attempts_at_most_two_accounts_per_request(self):

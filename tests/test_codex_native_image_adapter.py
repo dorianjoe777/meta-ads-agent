@@ -14,6 +14,97 @@ import codex_oauth_images as images
 
 
 class NativeImageOAuthBridgeTests(unittest.TestCase):
+    def test_terra_cli_classifies_codex_limit_for_pool_rotation(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            codex_home = root / "pool" / "limited"
+            codex_home.mkdir(parents=True)
+
+            class LimitedProcess:
+                pid = 999992
+                returncode = 1
+
+                def __init__(self, command, **kwargs):
+                    pass
+
+                def communicate(self, timeout=None):
+                    return "", "Usage limit reached. Try again later."
+
+            config = type("Config", (), {
+                "codex_cli": "codex", "codex_creative_model": "gpt-5.5",
+                "hermes_model": "gpt-5.5", "hermes_home": "/wrong/home",
+                "agent_brain_provider": "openai_codex", "agent_chat_provider": "hermes",
+                "agent_chat_base_url": "", "codex_image_source": "main_chatgpt",
+                "codex_image_hermes_home": "", "codex_image_hermes_model": "gpt-5.5",
+            })()
+            with patch.object(brand, "load_config", return_value=config), \
+                 patch.object(brand, "codex_cli_auth_status", return_value={"ok": True}), \
+                 patch.object(brand.subprocess, "Popen", LimitedProcess):
+                result = brand.call_codex_image_cli_direct(
+                    "Genera una imagen", model="gpt-5.6-terra", codex_home=codex_home,
+                )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["failure_category"], "codex_usage_limit")
+
+    def test_terra_cli_accepts_only_broker_snapshots_and_attaches_them(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            codex_home = root / "pool" / "fresh-account"
+            codex_home.mkdir(parents=True)
+            work = root / "broker-work"
+            references = work / "references"
+            references.mkdir(parents=True)
+            reference = references / "real-photo.png"
+            reference.write_bytes(b"real-photo")
+            outside = root / "outside.png"
+            outside.write_bytes(b"outside")
+            captured = {}
+
+            class FakeProcess:
+                pid = 999991
+                returncode = 0
+
+                def __init__(self, command, **kwargs):
+                    captured["command"] = command
+                    captured["env"] = kwargs["env"]
+                    captured["attached_bytes"] = Path(command[command.index("--image") + 1]).read_bytes()
+                    generated = Path(kwargs["env"]["CODEX_HOME"]) / "generated_images" / "job" / "image.png"
+                    generated.parent.mkdir(parents=True, exist_ok=True)
+                    generated.write_bytes(b"generated")
+                    output_index = command.index("--output-last-message") + 1
+                    Path(command[output_index]).write_text("Imagen generada.", encoding="utf-8")
+
+                def communicate(self, timeout=None):
+                    return "ok", ""
+
+            config = type("Config", (), {
+                "codex_cli": "codex", "codex_creative_model": "gpt-5.5",
+                "hermes_model": "gpt-5.5", "hermes_home": "/wrong/home",
+                "agent_brain_provider": "openai_codex", "agent_chat_provider": "hermes",
+                "agent_chat_base_url": "", "codex_image_source": "main_chatgpt",
+                "codex_image_hermes_home": "", "codex_image_hermes_model": "gpt-5.5",
+            })()
+            with patch.dict(brand.os.environ, {"OPENAI_API_KEY": "must-not-reach-cli"}), \
+                 patch.object(brand, "load_config", return_value=config), \
+                 patch.object(brand, "codex_cli_auth_status", return_value={"ok": True}), \
+                 patch.object(brand.subprocess, "Popen", FakeProcess):
+                result = brand.call_codex_image_cli_direct(
+                    "Usa la foto real adjunta", model="gpt-5.6-terra",
+                    output_root=work, reference_image_paths=[str(reference), str(outside)],
+                    codex_home=codex_home, isolated_reference_root=work,
+                )
+
+            command = captured["command"]
+            self.assertTrue(result["ok"])
+            self.assertEqual(command[command.index("-m") + 1], "gpt-5.6-terra")
+            self.assertIn("--ephemeral", command)
+            self.assertEqual(command.count("--image"), 1)
+            self.assertEqual(captured["attached_bytes"], b"real-photo")
+            self.assertEqual(captured["env"]["CODEX_HOME"], str(codex_home.resolve()))
+            self.assertEqual(captured["env"]["HERMES_HOME"], str(codex_home.resolve()))
+            self.assertNotIn("OPENAI_API_KEY", captured["env"])
+
     def test_pool_bridge_overrides_dedicated_and_global_homes_only_in_child(self):
         with tempfile.TemporaryDirectory() as root:
             before = dict(os.environ)

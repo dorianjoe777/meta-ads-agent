@@ -5,15 +5,19 @@ ChatGPT/Codex subscription. Read it before changing models, upgrading Codex,
 or debugging a Telegram creative that is slow, missing, or reported as
 successful without an attachment.
 
-## Shared ChatGPT subscription login
+## Shared ChatGPT/Codex OAuth pool
 
-The Gemini installation uses one buyer-selected ChatGPT subscription for both
-Image 2 and the Terra text fallback. The canonical login is the native Codex
-device flow under `CODEX_HOME = HERMES_HOME/codex-auth`; after it completes,
-Admira imports that exact session into Hermes. Never import an older CLI cache
-over a newer Hermes login.
+The hosted service uses two to eight operator-managed ChatGPT/Codex accounts.
+Each account has a private `CODEX_HOME` below
+`/app/runtime/hermes/codex-auth-pool/<account-id>` and its own lock/cooldown.
+The operator dashboard may add or reconnect a slot, but image jobs never copy
+OAuth material into a tenant container or select an API key.
 
-From the authorized Telegram chat, the buyer can send `/conectar_chatgpt` or a
+Personal/non-sponsored installations retain their own isolated login at
+`CODEX_HOME = HERMES_HOME/codex-auth`; never import an older CLI cache over a
+newer login.
+
+On a personal installation, the authorized Telegram chat can send `/conectar_chatgpt` or a
 clear request such as “dame el enlace para cambiar la cuenta de ChatGPT”. The
 gateway handles this before inference, so it also works while the primary model
 is unavailable. It returns only the allow-listed OpenAI URL and one-time code.
@@ -23,23 +27,22 @@ image-only stores, preserves business memory/campaign data, changes Image 2 to
 30-second timeout. A Hermes-only login remains a 300-second compatibility
 fallback when the Codex CLI is absent.
 
-After login verify all three conditions:
+For a hosted pool slot, verify these conditions without reading `auth.json`:
 
-1. `codex login status` succeeds with the isolated `CODEX_HOME`.
-2. Hermes resolves `openai-codex` from the matching `HERMES_HOME`.
-3. A Terra text probe and an Image 2 probe use the same account identifier and
-   neither reports the prior account's cooldown.
+1. `codex login status` succeeds with that slot's isolated `CODEX_HOME`.
+2. A Terra probe succeeds with `-m gpt-5.6-terra` in the same home.
+3. The central pool selects and cools down only the slot that actually ran.
 
 The companion end-to-end test procedure is
 [`real-conversation-image-canary.md`](real-conversation-image-canary.md).
 
 ## What the product actually does
 
-This route does **not** call the OpenAI Images API with an Admira API key. Its
-primary path calls Hermes' subscription-native `openai-codex` image provider,
-authenticated with the buyer's ChatGPT subscription. That provider calls the
-image model directly and writes a raster file. It does not need to start a
-Terra, Sol, or Luna reasoning session first.
+This route does **not** call the OpenAI Images API with an Admira API key. The
+shared service selects one isolated operator-owned ChatGPT/Codex OAuth slot and
+starts one ephemeral `codex exec` turn pinned to `gpt-5.6-terra`. Terra receives
+the complete creative brief and the `$imagegen` instruction, invokes the image
+tool, and writes the raster result below that slot's `generated_images` tree.
 
 ```text
 Telegram buyer
@@ -48,20 +51,20 @@ Telegram buyer
   -> mcp_admira_codex_image_generate
   -> Admira MCP subprocess
   -> Admira tool bridge / dashboard image action
-  -> Hermes openai-codex image provider
-  -> gpt-image-2-medium through the buyer's ChatGPT subscription
-  -> <image-HERMES_HOME>/cache/images/.../image.png
+  -> shared central OAuth account pool
+  -> codex exec -m gpt-5.6-terra with $imagegen
+  -> the image-generation tool in that Codex turn
+  -> <selected-CODEX_HOME>/generated_images/.../image.png
   -> /app/output/creatives/codex-.../admira-image.png
   -> MCP role=tool result containing media_attachment=MEDIA:<path>
   -> Admira Hermes runtime attachment hook
   -> Telegram sendPhoto/media-group delivery
 ```
 
-Only when that provider is unavailable for a known compatibility reason does
-Admira fall back to `codex exec -m <model> $imagegen`. Terra is therefore a
-compatibility fallback, not the normal image worker and not the pixel model.
-This distinction matters because the direct CLI consumes the account's Codex
-agent/reasoning allowance before it can invoke image generation.
+The older standalone `/codex/images/generations` adapter remains in the source
+only as a rollback/diagnostic component; it is no longer the production
+provider for the shared pool. The active route consumes the selected account's
+Codex allowance as well as any image-generation allowance enforced by OpenAI.
 
 ## Hybrid designs with real buyer photos
 
@@ -74,7 +77,7 @@ natural Telegram request
   -> main model reads creative-production-codex-image
   -> mcp_admira_codex_image_generate(real_media=[1..6 ordered slots])
   -> select non-brand chroma key per slot
-  -> existing gpt-image-2-medium provider creates one dynamic overlay
+  -> Terra calls `$imagegen` to create one dynamic overlay
   -> validate connected masks and slot mapping
   -> insert exact buyer photos locally (crop/scale/mask only)
   -> insert exact saved logo locally
@@ -134,13 +137,12 @@ and [`real-photo-ad-overlay-pipeline.md`](real-photo-ad-overlay-pipeline.md).
 
 ## Current canary contract
 
-As of 2026-08-18, the known-good canary contract is:
+As of 2026-09-04, the intended canary contract is:
 
 - Main conversational brain: Gemini through Hermes.
-- Primary image provider: `openai-codex` through Hermes.
-- Primary pixel model observed in successful results: `gpt-image-2-medium`.
-- Compatibility fallback: `gpt-5.6-terra` through Codex CLI and the buyer's
-  ChatGPT login.
+- Primary shared image worker: `codex exec -m gpt-5.6-terra` with `$imagegen`.
+- Authentication: the central pool's selected ChatGPT/Codex OAuth slot; no
+  OpenAI API key or custom API base is inherited by the image subprocess.
 - Codex CLI observed during the repair: `0.147.0`.
 - Inner image-provider or Codex-fallback timeout: 270 seconds.
 - Complete buyer-facing creative-tool ceiling: 300 seconds.
@@ -152,24 +154,18 @@ As of 2026-08-18, the known-good canary contract is:
 - Telegram success requires a native attachment event, not only a PNG on disk
   or a success sentence.
 
-The primary provider does not depend on Terra being available. Treat the
-fallback model name and CLI version as a recorded known-good pair, not a
-permanent guarantee. Account catalogs, subscription entitlements, and CLI
-compatibility can change.
+The primary provider now depends on Terra being available to the selected
+account and CLI. Account catalogs, subscription entitlements, and CLI
+compatibility can change, so release validation must include a real canary.
 
-## Configuration flow: provider first, model fallback second
+## Configuration flow: central pool, Terra, then ImageGen
 
-The image action must call `run_hermes_image_bridge()` first. A healthy response
-identifies `provider=openai-codex` and normally `model=gpt-image-2-medium`.
-`CODEX_IMAGE_HERMES_MODEL` is relevant only if the bridge reports a recognized
-compatibility failure and the direct `codex exec` fallback is used.
-
-The fallback model begins in the container environment as
-`CODEX_IMAGE_HERMES_MODEL`. `hermes_gateway.py` copies it into
-`mcp_servers.admira.env` in `/app/runtime/hermes/config.yaml`. Hermes launches
-the isolated MCP subprocess from that block. The image action then passes the
-fallback model to `codex_brand_guides.call_codex_image_cli_direct`, which adds
-`-m <model>` to `codex exec`.
+`CentralCodexAccountPool` chooses an available account, locks that slot, and
+passes its private home to `call_codex_image_cli_direct()`. The provider pins
+`gpt-5.6-terra`; tenant configuration cannot replace it. The subprocess receives
+the same selected path as both `CODEX_HOME` and the isolation boundary, and any
+inherited OpenAI API key/base URL is removed. A Codex usage-limit failure puts
+only that slot on cooldown and permits at most one alternate account attempt.
 
 Do not trust only the host `.env`, Compose inspection, dashboard display, or
 `/app/runtime/.env`. The value that matters is the value inside the live MCP
@@ -178,29 +174,21 @@ process and the `-m` argument on the live Codex command.
 Verify all four layers:
 
 ```bash
-# 1. Container configuration
-docker inspect <container> --format '{{range .Config.Env}}{{println .}}{{end}}' \
-  | grep '^CODEX_IMAGE_HERMES_MODEL='
+# 1. Central pool configuration
+docker inspect <central-container> --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep -E '^ADMIRA_CENTRAL_CODEX_(AUTH_ROOT|ACCOUNT_IDS)='
 
-# 2. Generated Hermes MCP configuration
-docker exec <container> sh -lc \
-  'grep -n -A14 "mcp_servers:" /app/runtime/hermes/config.yaml'
+# 2. OAuth status for each configured slot (never print auth.json)
+docker exec <central-container> sh -lc \
+  'CODEX_HOME=/app/runtime/hermes/codex-auth-pool/<account> codex login status'
 
-# 3. Live MCP process environment (run on the host)
-mcp_pid=$(docker top <container> -eo pid,comm,args \
-  | awk '$2=="python3" && /admira_mcp_server.py/ {print $1; exit}')
-tr '\0' '\n' < "/proc/$mcp_pid/environ" \
-  | grep -E '^(CODEX_IMAGE_HERMES_MODEL|ADMIRA_HEAVY_TOOL_TIMEOUT_SECONDS)='
-
-# 4. Only if fallback occurs, inspect the live Codex command line
-docker top <container> -eo pid,ppid,etimes,stat,comm,args \
+# 3. While the controlled canary runs, inspect the pinned command
+docker top <central-container> -eo pid,ppid,etimes,stat,comm,args \
   | grep -E 'codex exec|admira_codex_image_generate'
 ```
 
-If the provider status is healthy, no `codex exec` process should be required.
-If fallback occurs and layers 1-2 say Terra but layer 4 says an older model,
-the MCP environment bridge is broken or the long-running Gateway has not been
-restarted.
+The live command must contain `-m gpt-5.6-terra`. A different model means the
+central image service is running an old image or old source checkout.
 
 ## Authentication layout
 
@@ -340,17 +328,14 @@ A `Z`/`<defunct>` process cannot be killed again; its parent must reap it. A
 planned container restart clears it. Confirm the PID and command belong to the
 failed image request before signaling any process group.
 
-### Direct Codex CLI preempts the image provider
+### Legacy direct-image route preempts Codex exec
 
-This was the 2026-08-18 canary regression. A direct Terra session was attempted
-before the healthy `openai-codex` image provider. Terra stalled for the full
-270-second worker timeout, so the working direct-image route was never reached.
-
-The invariant is provider-first: `run_hermes_image_bridge()` must run before
-`call_codex_image_cli_direct()`. Direct CLI fallback is allowed only for the
-explicit compatibility errors in `CODEX_IMAGE_DIRECT_FALLBACK_ERROR_TYPES`.
-A provider timeout, rate limit, or ambiguous failure must not launch a second
-subscription operation automatically.
+The shared-pool invariant is now the reverse of the retired 2026-08-18 design:
+`CentralCodexAccountPool._default_provider()` must call
+`call_codex_image_cli_direct()` directly. It must not call
+`run_hermes_image_bridge()` or `call_codex_image_native()` first. One request
+gets at most one attempt per slot and two slots total; it never runs both image
+transports for the same attempt.
 
 ### Subscription quota or provider throttling
 
@@ -359,13 +344,10 @@ text. Do not automatically retry a successful or ambiguous image call: a
 duplicate consumes subscription capacity and can create the wrong attachment.
 Return one clear retryable failure and preserve the original diagnostic.
 
-Do not treat every `usage_limit_exceeded` as an image-limit result. A Codex
-rollout/session file reports the Codex agent/reasoning allowance used by direct
-`codex exec`; the `openai-codex` provider's image allowance is a separate path.
-It is valid for direct Terra to report an exhausted Codex allowance while the
-provider status still reports `provider=openai-codex` and image generation is
-available. Check the backend/provider stored in the MCP result and run provider
-status inside the exact MCP environment before diagnosing image quota.
+On this route, a generic usage/rate-limit result from `codex-cli-direct` is a
+Codex allowance failure. The pool records only `codex_usage_limit`, cools down
+that exact slot, and may try one other slot. It does not bypass a Codex limit by
+calling the retired standalone image transport.
 
 ### A file appears after a reported failure
 

@@ -19,8 +19,8 @@ simulated Telegram payload
   -> hermes_bridge.chat / Hermes CLI
   -> configured main brain (for example Gemini)
   -> mcp_admira_codex_image_generate
-  -> Hermes openai-codex provider with the dedicated ChatGPT subscription
-  -> gpt-image-2-medium (direct Codex CLI/Terra only as compatibility fallback)
+  -> shared central ChatGPT/Codex OAuth pool
+  -> codex exec -m gpt-5.6-terra with $imagegen
   -> saved image under /app/output/creatives/
 ```
 
@@ -70,9 +70,9 @@ Expected architecture:
 
 - `AGENT_CHAT_PROVIDER=hermes`
 - the main conversational model is the configured buyer-facing brain
-- `CODEX_IMAGE_SOURCE=dedicated_chatgpt`
-- provider status resolves to `openai-codex`; the configured Codex model is
-  only the compatibility fallback
+- the tenant is entitled to the central sponsored image route
+- the central service pins `gpt-5.6-terra`; tenant model settings do not
+  override it
 - Codex reports that it is logged in with ChatGPT
 
 ## Execute one real conversation

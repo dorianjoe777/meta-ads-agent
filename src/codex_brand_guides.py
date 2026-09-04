@@ -28,6 +28,7 @@ GENERAL_GUIDE = BRAND_DIR / "general_branding.md"
 CREATIVE_REFERENCES_FILE = BRAND_DIR / "creative_references.md"
 OFFER_MAP_FILENAME = "Offer map.md"
 CODEX_GENERATED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+CODEX_IMAGE_EXEC_MODEL = "gpt-5.6-terra"
 BRAND_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 GENERAL_EXAMPLE = BRAND_DIR / "general_branding.example.md"
 PRODUCT_EXAMPLE = PRODUCT_DIR / "product.example.md"
@@ -684,6 +685,30 @@ def safe_creative_reference_paths(paths):
             continue
         if any(_path_is_within(path, root) for root in allowed_roots):
             safe.append(path)
+    return safe[:8]
+
+
+def safe_isolated_reference_paths(paths, root):
+    """Allow provider snapshots only from one broker-owned private root."""
+    if root is None:
+        return []
+    try:
+        allowed_root = Path(root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return []
+    safe = []
+    for raw in paths or []:
+        try:
+            candidate = Path(str(raw)).expanduser()
+            if candidate.is_symlink():
+                continue
+            path = candidate.resolve(strict=True)
+            path.relative_to(allowed_root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if path.suffix.lower() not in CODEX_GENERATED_IMAGE_EXTENSIONS or not path.is_file():
+            continue
+        safe.append(path)
     return safe[:8]
 
 
@@ -2052,18 +2077,26 @@ def codex_cli_environment(config, use_image_home=False, codex_home=None):
     if use_image_home:
         config = image_codex_config(config)
     env = os.environ.copy()
+    explicit_codex_home = str(codex_home or "").strip()
     hermes_home = str(getattr(config, "hermes_home", "") or "").strip()
-    if hermes_home:
+    if explicit_codex_home:
+        # A selected central-pool slot is the complete OAuth boundary.  Do not
+        # inherit a tenant/global Hermes home or silently fall back to it.
+        resolved = str(Path(explicit_codex_home).expanduser().resolve())
+        env["HERMES_HOME"] = resolved
+        env["CODEX_HOME"] = resolved
+        # Central image jobs are subscription/OAuth-only.  An unrelated host
+        # API key or custom base URL must never override the selected slot.
+        for name in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE", "CODEX_API_KEY"):
+            env.pop(name, None)
+    elif hermes_home:
         resolved = str(Path(hermes_home).expanduser())
         env["HERMES_HOME"] = resolved
         # Keep Codex CLI's OAuth store separate from Hermes' provider store.
         # Hermes auth.json contains Gemini/provider credentials and is not a
         # valid Codex CLI auth.json. Sharing the two files can make `login
         # status` appear healthy while the image subprocess receives a 401.
-        explicit_codex_home = str(codex_home or "").strip()
         configured_codex_home = (
-            explicit_codex_home
-            or
             os.environ.get("ADMIRA_CODEX_AUTH_HOME")
             or os.environ.get("CODEX_AUTH_HOME")
             or ""
@@ -2516,14 +2549,15 @@ Pedido del comprador:
 """
 
 
-def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=None, output_name="creative", reference_image_paths=None, purpose="ad_creative", codex_home=None):
-    """Legacy fallback: generate a real image through a direct Codex CLI session."""
+def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=None, output_name="creative", reference_image_paths=None, purpose="ad_creative", codex_home=None, isolated_reference_root=None):
+    """Generate a real image in one isolated Codex CLI conversation."""
+    attempt_started_at = time.monotonic()
     request = str(prompt or "").strip()
     if not request:
         return {"ok": False, "error": "Necesito una descripcion del creativo antes de generar la imagen."}
     config = load_config()
     executable = getattr(config, "codex_cli", "codex")
-    selected_model = str(model or getattr(config, "codex_creative_model", "") or getattr(config, "hermes_model", "") or "").strip()
+    selected_model = str(model or CODEX_IMAGE_EXEC_MODEL).strip()
     env = codex_cli_environment(config, use_image_home=True, codex_home=codex_home)
     codex_home = Path(env.get("CODEX_HOME") or os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
     generated_root = codex_home / "generated_images"
@@ -2547,12 +2581,21 @@ def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=Non
             "ok": False,
             "error": error,
             "reason": reason,
+            "failure_category": (
+                "provider_unavailable"
+                if reason in {"codex_cli_missing", "codex_cli_broken"}
+                else "provider_auth"
+            ),
             "auth": auth,
             "command": [executable, "login", "status"],
         }
     before = generated_image_index(root=generated_root)
     started_at = time.time()
-    safe_references = safe_creative_reference_paths(reference_image_paths)
+    safe_references = (
+        safe_isolated_reference_paths(reference_image_paths, isolated_reference_root)
+        if isolated_reference_root is not None
+        else safe_creative_reference_paths(reference_image_paths)
+    )
     with tempfile.TemporaryDirectory(prefix="meta-ads-codex-image-") as isolated_dir:
         isolated = Path(isolated_dir)
         last_message = isolated / "last-message.txt"
@@ -2561,6 +2604,7 @@ def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=Non
             "exec",
             "--sandbox",
             "workspace-write",
+            "--ephemeral",
             "--skip-git-repo-check",
             "-C",
             str(isolated),
@@ -2585,7 +2629,12 @@ def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=Non
                 start_new_session=True,
             )
         except FileNotFoundError:
-            return {"ok": False, "error": "Codex CLI no esta instalado o no esta en PATH.", "command": [executable, "exec", "[image request]"]}
+            return {
+                "ok": False,
+                "error": "Codex CLI no esta instalado o no esta en PATH.",
+                "failure_category": "provider_unavailable",
+                "command": [executable, "exec", "[image request]"],
+            }
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -2601,6 +2650,7 @@ def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=Non
                 "ok": False,
                 "reason": "codex_cli_timeout",
                 "error_type": "timeout",
+                "failure_category": "provider_timeout",
                 "timeout_seconds": int(timeout),
                 "error": "Codex/Image tardo demasiado en generar la imagen. Intenta otra vez con una solicitud mas corta.",
                 "command": [executable, "exec", "[image request]"],
@@ -2610,6 +2660,14 @@ def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=Non
     generated = newest_generated_image(before=before, started_at=started_at, root=generated_root)
     error = "" if completed.returncode == 0 else codex_cli_error_message(completed.stderr, completed.stdout)
     if not generated:
+        failure = _image_failure_metadata(
+            "\n".join((completed.stderr or "", completed.stdout or "", last_text or "")),
+            "",
+            backend="codex-cli-direct",
+            started_at=attempt_started_at,
+        )
+        if failure.get("failure_category") == "unknown":
+            failure["failure_category"] = "provider_failed"
         return {
             "ok": False,
             "returncode": completed.returncode,
@@ -2619,6 +2677,7 @@ def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=Non
             "error": error or "Codex respondio, pero no encontre una imagen generada. Intenta pedir una imagen final, no solo ideas.",
             "command": [executable, "exec", "[image request]"],
             "model": selected_model,
+            **failure,
         }
     published = publish_generated_image(generated, output_root=output_root, output_name=output_name, batch_prefix="codex")
     if not published.get("ok"):

@@ -38,6 +38,7 @@ _DEFAULT_COOLDOWNS = {
 _SAFE_RESULT_KEYS = {"image_path", "path", "asset_id", "preview_url", "output_ref", "sha256", "size"}
 MAX_ATTEMPTS_PER_REQUEST = 2
 COMPILER_MODEL = "gpt-5.6-terra"
+IMAGE_MODEL = "gpt-5.6-terra"
 
 
 class AccountPoolConfigError(ValueError):
@@ -180,11 +181,12 @@ class CentralCodexAccountPool:
                           model: str | None, output_root: Path | None,
                           output_name: str, reference_image_paths: Sequence[str],
                           purpose: str) -> object:
-        from codex_brand_guides import call_codex_image_native
-        result = call_codex_image_native(
-            prompt, timeout=timeout, model=model, output_root=output_root,
+        from codex_brand_guides import call_codex_image_cli_direct
+        result = call_codex_image_cli_direct(
+            prompt, timeout=timeout, model=IMAGE_MODEL, output_root=output_root,
             output_name=output_name, reference_image_paths=reference_image_paths,
             purpose=purpose, codex_home=codex_home,
+            isolated_reference_root=output_root,
         )
         if isinstance(result, Mapping) and result.get("ok") is not True:
             # Reduce the provider response immediately.  In particular, do

@@ -459,7 +459,7 @@ class CentralImageServiceTests(unittest.TestCase):
     def test_production_provider_does_not_leak_provider_exception(self):
         class FakeCodex:
             @staticmethod
-            def call_codex_image_native(*args, **kwargs):
+            def call_codex_image_cli_direct(*args, **kwargs):
                 raise RuntimeError("provider secret")
         previous = sys.modules.get("codex_brand_guides")
         sys.modules["codex_brand_guides"] = FakeCodex
