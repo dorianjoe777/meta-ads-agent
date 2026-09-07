@@ -236,6 +236,10 @@ def _release_unfinalized(args: argparse.Namespace, runtime: str, *, runner: Runn
         return False
 
 
+class PoolUnavailableError(RuntimeError):
+    """No eligible tenant/project/credential assignment exists."""
+
+
 def assign(args: argparse.Namespace, *, runner: Runner | None = None,
            manage: Callable[..., dict[str, object]] | None = None,
            fence: Callable[[str], bool] | None = None) -> dict[str, object]:
@@ -245,7 +249,7 @@ def assign(args: argparse.Namespace, *, runner: Runner | None = None,
     row = _psql(args, "SELECT row_to_json(x) FROM admira.assign_hosted_gemini_trial(:'runtime_key') x;\n",
                 payload="", runner=runner, variables={"runtime_key": runtime})
     if not row:
-        raise RuntimeError("no eligible Gemini pool assignment")
+        raise PoolUnavailableError("no eligible Gemini pool assignment")
     try:
         metadata = json.loads(row.splitlines()[-1])
         if not isinstance(metadata, dict) or metadata.get("key_kind") != "auth":

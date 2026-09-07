@@ -795,12 +795,15 @@ class OperatorState:
         try:
             with connect() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT project_ref, capacity, health, health_checked_at FROM admira.operator_gemini_pool_status() ORDER BY project_ref")
+                    cur.execute("SELECT project_ref, capacity, health, health_checked_at, used, available, clients FROM admira.operator_gemini_pool_inventory() ORDER BY project_ref")
                     rows = cur.fetchall()
         except Exception:
             raise RuntimeError("gemini_status_unavailable") from None
         return [{"project_ref": str(row[0])[:200], "capacity": int(row[1]), "health": str(row[2])[:32],
-                 "health_checked_at": row[3].isoformat() if hasattr(row[3], "isoformat") else None} for row in rows[:1000]]
+                 "health_checked_at": row[3].isoformat() if hasattr(row[3], "isoformat") else None,
+                 "used": int(row[4]), "available": int(row[5]),
+                 "clients": [self._projection_text(client, 63) for client in (row[6] or [])][:10000]}
+                for row in rows[:1000]]
 
     def sponsorship_status(self) -> list[dict[str, Any]]:
         """Return only the bounded operator projection, never tenant secrets."""
@@ -943,7 +946,10 @@ class OperatorState:
         if safe in conflict:
             return OperatorActionError(safe, 409)
         if safe in {
-            "gemini_pool_unavailable", "tenant_provision_failed", "claim_unavailable",
+            "gemini_pool_unavailable", "gemini_pool_assignment_failed", "gemini_pool_cleanup_pending",
+            "gemini_pool_runtime_fence_failed", "gemini_pool_environment_write_failed",
+            "gemini_pool_health_check_failed", "gemini_pool_metadata_record_failed",
+            "gemini_pool_finalize_failed", "tenant_provision_failed", "claim_unavailable",
             "runtime_suspend_pending", "license_bridge_unavailable", "license_bridge_rejected",
             "license_transition_failed", "provisioner_unavailable", "provisioner_timeout",
             "provisioner_protocol_error", "provisioner_failure",

@@ -355,15 +355,17 @@ class OperatorProviderTests(PrivateFixture):
     def test_gemini_status_reads_security_definer_projection_only(self):
         cursor = mock.MagicMock()
         cursor.__enter__.return_value = cursor
-        cursor.fetchall.return_value = [("fixture-project", 2, "healthy", datetime.now(timezone.utc))]
+        cursor.fetchall.return_value = [("fixture-project", 2, "healthy", datetime.now(timezone.utc), 1, 1, ["customer-001"])]
         connection = mock.MagicMock()
         connection.__enter__.return_value = connection
         connection.cursor.return_value = cursor
         self.state.connect = lambda: connection
         result = self.state.gemini_status()
-        self.assertIn("admira.operator_gemini_pool_status()", cursor.execute.call_args.args[0])
+        self.assertIn("admira.operator_gemini_pool_inventory()", cursor.execute.call_args.args[0])
         self.assertNotIn("FROM admira.gemini_pool_projects", cursor.execute.call_args.args[0])
-        self.assertEqual(set(result[0]), {"project_ref", "capacity", "health", "health_checked_at"})
+        self.assertEqual(set(result[0]), {"project_ref", "capacity", "health", "health_checked_at", "used", "available", "clients"})
+        self.assertEqual(result[0]["clients"], ["customer-001"])
+        self.assertEqual(result[0]["available"], 1)
 
     def test_sponsorship_status_uses_bounded_secret_free_projection(self):
         now = datetime.now(timezone.utc)

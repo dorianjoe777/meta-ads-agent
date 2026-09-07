@@ -84,8 +84,29 @@ class ProvisionerContractTests(unittest.TestCase):
             "action": "create_trial", "tenant_key": "customer-001", "display_name": "Customer One",
         })
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error_code"], "gemini_pool_unavailable")
+        self.assertEqual(result["error_code"], "gemini_pool_assignment_failed")
         self.assertEqual([item[0] for item in events], ["provision", "db_create", "pool"])
+
+    def test_pool_failure_preserves_safe_reason_for_create_and_retry(self):
+        cases = {
+            "pool_unavailable": "gemini_pool_unavailable",
+            "health_check_failed": "gemini_pool_health_check_failed",
+            "runtime_fence_failed": "gemini_pool_runtime_fence_failed",
+            "metadata_record_failed": "gemini_pool_metadata_record_failed",
+            "private error detail": "gemini_pool_assignment_failed",
+        }
+        for action in ("create_trial", "reissue_trial_claim"):
+            for source, expected in cases.items():
+                with self.subTest(action=action, source=source):
+                    events = []
+                    core = FakeProvisioner(events)
+                    core._assign_pool_impl = lambda tenant: {"ok": False, "error_code": source}
+                    result = core.handle({"action": action, "tenant_key": "customer-001", "display_name": "Customer"})
+                    self.assertEqual(result["error_code"], expected)
+                    self.assertNotIn("claim", [event[0] for event in events])
+        self.assertEqual(ProvisionerCore._pool_failure_code(
+            {"error_code": "health_check_failed", "cleanup_pending": True}),
+            "gemini_pool_cleanup_pending")
 
     def test_extension_is_an_exact_timestamp_and_expiry_suspends_runtime(self):
         events = []

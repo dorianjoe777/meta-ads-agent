@@ -74,7 +74,14 @@
       invalid_display_name: "Escribe un nombre visible válido.",
       invalid_trial_extension: "Elige una fecha futura válida para la ampliación.",
       trial_not_active: "La cuenta ya no tiene una prueba activa.",
-      gemini_pool_unavailable: "No hay una clave Gemini disponible para asignar a esta prueba.",
+      gemini_pool_unavailable: "No hay un cupo Gemini asignable para esta prueba. Revisa cupos disponibles y estado de la cuenta.",
+      gemini_pool_assignment_failed: "No se pudo completar la conexión Gemini. Reintenta con la misma referencia de cliente; no necesitas otra cuenta.",
+      gemini_pool_cleanup_pending: "La conexión Gemini falló y su reserva requiere revisión. No crees una cuenta duplicada.",
+      gemini_pool_runtime_fence_failed: "No se pudo preparar el entorno del cliente para conectar Gemini. Reintenta con la misma referencia.",
+      gemini_pool_environment_write_failed: "No se pudo guardar la conexión Gemini en el entorno del cliente.",
+      gemini_pool_health_check_failed: "Gemini no superó la verificación al conectar esta cuenta. Hay un fallo de conexión o validación; no significa que falten cupos.",
+      gemini_pool_metadata_record_failed: "No se pudo confirmar la asignación Gemini en la base de datos. Reintenta con la misma referencia.",
+      gemini_pool_finalize_failed: "La asignación Gemini no pudo finalizar. Reintenta con la misma referencia.",
       gemini_assignment_failed: "No se pudo asignar el pool Gemini. La cuenta no recibió un enlace todavía.",
       license_bridge_unavailable: "El servicio de licencias no está disponible. La cuenta no cambió.",
       license_transition_failed: "No se pudo convertir la cuenta. La API key se borró del formulario; inténtalo de nuevo.",
@@ -412,7 +419,7 @@
     const allReady = geminiLoaded && codexLoaded && healthy > 0 && connected === 2 && !duplicate && !activeLogin && !state.geminiError && !state.codexError;
 
     $("#summary-gemini").textContent = state.geminiError ? "No disponible" : geminiLoaded ? (projects.length ? healthy + " / " + projects.length + " saludables" : "Sin proyectos") : "Consultando…";
-    $("#summary-gemini-detail").textContent = state.geminiError ? "Inventario no verificado" : geminiLoaded ? (projects.length ? numberFormat.format(projects.reduce((sum, project) => sum + (Number(project.capacity ?? project.max_trial_assignments) || 0), 0)) + " plazas configuradas · límite local" : "Registra una clave para comenzar") : "Verificando proyectos";
+    $("#summary-gemini-detail").textContent = state.geminiError ? "Inventario no verificado" : geminiLoaded ? (projects.length ? numberFormat.format(projects.reduce((sum, project) => sum + (Number(project.available) || 0), 0)) + " cupos disponibles · " + numberFormat.format(projects.reduce((sum, project) => sum + (Number(project.used) || 0), 0)) + " ocupados" : "Registra una clave para comenzar") : "Verificando proyectos";
     $("#summary-gemini-signal").className = "summary-signal " + (state.geminiError ? "error" : healthy ? "ready" : "pending");
     $("#summary-codex").textContent = state.codexError ? "No disponible" : codexLoaded ? connected + " / 2 conectadas" : "Consultando…";
     $("#summary-codex-detail").textContent = state.codexError ? "Autenticación no verificada" : duplicate ? "Cuenta repetida: conecta dos cuentas distintas" : connected === 2 ? "Conexiones guardadas; imágenes sin probar" : "Se requieren dos cuentas independientes";
@@ -431,7 +438,7 @@
     if (state.geminiError || !state.gemini?.length) {
       const row = document.createElement("tr");
       const cell = textElement("td", state.geminiError ? "error-cell" : "empty-cell", state.geminiError ? "Inventario no disponible. Usa «Actualizar inventario» para reintentar." : "Sin proyectos registrados. Valida una clave para crear el primer registro.");
-      cell.colSpan = 4;
+      cell.colSpan = 7;
       row.append(cell);
       rows.append(row);
     } else {
@@ -443,6 +450,9 @@
         row.append(
           textElement("td", "", String(project.project_ref || "Sin referencia")),
           textElement("td", "", numberFormat.format(Number(project.capacity ?? project.max_trial_assignments) || 0)),
+          textElement("td", "", numberFormat.format(Number(project.used) || 0)),
+          textElement("td", "", numberFormat.format(Number(project.available) || 0)),
+          textElement("td", "", (project.clients || []).join(", ") || "Sin clientes"),
           healthCell,
           textElement("td", "", formatDate(project.health_checked_at || project.updated_at))
         );
@@ -903,8 +913,8 @@
     if (displayName.length < 1) { invalidField($("#trial-display-name"), error, messageFor({ code: "invalid_display_name" })); return; }
     setFormBusy(form, true); setBusy($("#trial-submit"), true, "Creando…");
     try { const data = await request("/api/operator/trials", { method: "POST", body: JSON.stringify({ runtime_key: runtimeKey, display_name: displayName }) });
-      form.reset(); await refreshCustomers(); setNotice("Cuenta de prueba creada. " + (data?.claim_url ? "Se generó un enlace temporal." : "Usa Enlace para activarla en Telegram."), "success"); if (data?.claim_url) showClaim(data.claim_url); }
-    catch (e) { error.textContent = messageFor(e, "No se pudo crear la cuenta de prueba."); }
+      form.reset(); await Promise.all([refreshCustomers(), refreshGemini()]); setNotice("Cuenta de prueba creada. " + (data?.claim_url ? "Se generó un enlace temporal." : "Usa Enlace para activarla en Telegram."), "success"); if (data?.claim_url) showClaim(data.claim_url); }
+    catch (e) { error.textContent = messageFor(e, "No se pudo crear la cuenta de prueba."); await Promise.all([refreshCustomers(), refreshGemini()]); }
     finally { setFormBusy(form, false); setBusy($("#trial-submit"), false); }
   }
 
@@ -935,17 +945,17 @@
 
   async function trialAction(action, runtimeKey) {
     const encoded = encodeURIComponent(runtimeKey);
-    if (action === "claim") { try { const data = await request("/api/operator/trials/" + encoded + "/claim", { method: "POST", body: "{}" }); showClaim(data?.claim_url || data?.url || data?.deep_link || ""); } catch (e) { setNotice(messageFor(e, "No se pudo generar el enlace temporal."), "error"); } return; }
+    if (action === "claim") { try { const data = await request("/api/operator/trials/" + encoded + "/claim", { method: "POST", body: "{}" }); showClaim(data?.claim_url || data?.url || data?.deep_link || ""); await Promise.all([refreshCustomers(), refreshGemini()]); } catch (e) { setNotice(messageFor(e, "No se pudo generar el enlace temporal."), "error"); } return; }
     state.trialActionKey = runtimeKey;
     if (action === "extend") { const item = (state.trials || []).find((x) => x.runtime_key === runtimeKey); const end = Date.parse(item?.trial_ends_at || ""); const input = $("#extend-trial-end"); input.min = localDateTimeValue(new Date(Date.now() + 60000)); input.max = localDateTimeValue(new Date(Date.now() + 365 * 86400000)); input.value = Number.isFinite(end) ? localDateTimeValue(new Date(end)) : ""; $("#extend-trial-error").textContent = ""; $("#extend-trial-dialog").showModal(); input.focus(); return; }
     if (action === "license") { $("#license-error").textContent = ""; resetSecret($("#license-gemini-key")); $("#license-dialog").showModal(); $("#license-gemini-key").focus(); return; }
     if (action === "expire") { const ok = await confirmAction({ title: "¿Caducar esta prueba?", description: runtimeKey + " perderá el acceso de prueba y su runtime se suspenderá.", accept: "Caducar cuenta", danger: true }); if (!ok) return; }
-    try { await request("/api/operator/trials/" + encoded + "/" + action, { method: "POST", body: "{}" }); await refreshCustomers(); setNotice(action === "expire" ? "La cuenta fue caducada." : "Operación completada.", "success"); } catch (e) { setNotice(messageFor(e, "No se pudo completar la operación."), "error"); }
+    try { await request("/api/operator/trials/" + encoded + "/" + action, { method: "POST", body: "{}" }); await Promise.all([refreshCustomers(), refreshGemini()]); setNotice(action === "expire" ? "La cuenta fue caducada." : "Operación completada.", "success"); } catch (e) { setNotice(messageFor(e, "No se pudo completar la operación."), "error"); }
   }
 
-  async function extendTrial(event) { event.preventDefault(); const end = new Date($("#extend-trial-end").value); const error = $("#extend-trial-error"); if (Number.isNaN(end.getTime()) || end <= new Date()) { error.textContent = messageFor({ code: "invalid_trial_extension" }); return; } setBusy($("#extend-trial-submit"), true, "Guardando…"); try { await request("/api/operator/trials/" + encodeURIComponent(state.trialActionKey) + "/extend", { method: "POST", body: JSON.stringify({ ends_at: end.toISOString() }) }); $("#extend-trial-dialog").close(); await refreshCustomers(); setNotice("Prueba ampliada para " + state.trialActionKey + ".", "success"); } catch (e) { error.textContent = messageFor(e, "No se pudo ampliar la prueba."); } finally { setBusy($("#extend-trial-submit"), false); } }
+  async function extendTrial(event) { event.preventDefault(); const end = new Date($("#extend-trial-end").value); const error = $("#extend-trial-error"); if (Number.isNaN(end.getTime()) || end <= new Date()) { error.textContent = messageFor({ code: "invalid_trial_extension" }); return; } setBusy($("#extend-trial-submit"), true, "Guardando…"); try { await request("/api/operator/trials/" + encodeURIComponent(state.trialActionKey) + "/extend", { method: "POST", body: JSON.stringify({ ends_at: end.toISOString() }) }); $("#extend-trial-dialog").close(); await Promise.all([refreshCustomers(), refreshGemini()]); setNotice("Prueba ampliada para " + state.trialActionKey + ".", "success"); } catch (e) { error.textContent = messageFor(e, "No se pudo ampliar la prueba."); } finally { setBusy($("#extend-trial-submit"), false); } }
 
-  async function licenseTrial(event) { event.preventDefault(); const keyInput = $("#license-gemini-key"); const key = keyInput.value.trim(); const error = $("#license-error"); if (!key) { invalidField(keyInput, error, "Introduce la API key Gemini del cliente."); return; } const body = JSON.stringify({ gemini_api_key: key }); resetSecret(keyInput); setFormBusy(event.currentTarget, true); setBusy($("#license-submit"), true, "Asignando…"); try { const data = await request("/api/operator/trials/" + encodeURIComponent(state.trialActionKey) + "/license", { method: "POST", body }); $("#license-dialog").close(); await refreshCustomers(); setNotice(data?.license_key ? "Licencia creada y asignada. Guarda el código ahora." : "Cuenta convertida a licenciada. El correo queda pendiente.", "success"); if (data?.license_key) showClaim(data.license_key, "license"); } catch (e) { error.textContent = messageFor(e, "No se pudo asignar la licencia. La key fue borrada."); } finally { resetSecret(keyInput); setFormBusy(event.currentTarget, false); setBusy($("#license-submit"), false); } }
+  async function licenseTrial(event) { event.preventDefault(); const keyInput = $("#license-gemini-key"); const key = keyInput.value.trim(); const error = $("#license-error"); if (!key) { invalidField(keyInput, error, "Introduce la API key Gemini del cliente."); return; } const body = JSON.stringify({ gemini_api_key: key }); resetSecret(keyInput); setFormBusy(event.currentTarget, true); setBusy($("#license-submit"), true, "Asignando…"); try { const data = await request("/api/operator/trials/" + encodeURIComponent(state.trialActionKey) + "/license", { method: "POST", body }); $("#license-dialog").close(); await Promise.all([refreshCustomers(), refreshGemini()]); setNotice(data?.license_key ? "Licencia creada y asignada. Guarda el código ahora." : "Cuenta convertida a licenciada. El correo queda pendiente.", "success"); if (data?.license_key) showClaim(data.license_key, "license"); } catch (e) { error.textContent = messageFor(e, "No se pudo asignar la licencia. La key fue borrada."); } finally { resetSecret(keyInput); setFormBusy(event.currentTarget, false); setBusy($("#license-submit"), false); } }
 
   function finishConfirmation(accepted) {
     const resolve = state.confirmResolve;

@@ -214,7 +214,7 @@
               <div class="inventory-head">
                 <div>
                   <h3>Inventario de salud</h3>
-                  <p id="gemini-inventory-description">Vista redactada: las claves y huellas completas nunca se muestran.</p>
+                  <p id="gemini-inventory-description">Cupos por proyecto: cada cliente asignado ocupa una plaza. Las claves nunca se muestran.</p>
                 </div>
                 <span class="redacted-chip"><span aria-hidden="true"></span>DATOS REDACTADOS</span>
               </div>
@@ -222,10 +222,10 @@
                 <table>
                   <caption class="sr-only">Proyectos Gemini registrados y su salud; no incluye claves</caption>
                   <thead>
-                    <tr><th scope="col">Proyecto</th><th scope="col">Capacidad</th><th scope="col">Salud</th><th scope="col">Última revisión</th></tr>
+                    <tr><th scope="col">Proyecto</th><th scope="col">Capacidad</th><th scope="col">Ocupados</th><th scope="col">Disponibles</th><th scope="col">Clientes asignados</th><th scope="col">Salud</th><th scope="col">Última revisión</th></tr>
                   </thead>
                   <tbody id="gemini-rows">
-                    <tr class="loading-row"><td colspan="4"><span class="skeleton-line"></span><span class="sr-only">Cargando inventario Gemini</span></td></tr>
+                    <tr class="loading-row"><td colspan="7"><span class="skeleton-line"></span><span class="sr-only">Cargando inventario Gemini</span></td></tr>
                   </tbody>
                 </table>
               </div>

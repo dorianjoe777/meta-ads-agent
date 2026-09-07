@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import socket
+import logging
 import socketserver
 import stat
 import subprocess
@@ -300,12 +301,12 @@ class ProvisionerCore:
                 return {"ok": False, "action": action, "tenant_key": tenant_key, "error_code": "trial_create_failed"}
             assigned = self._ensure_trial_pool(tenant_key)
             if not assigned.get("ok"):
-                return {"ok": False, "action": action, "tenant_key": tenant_key, "error_code": "gemini_pool_unavailable"}
+                return {"ok": False, "action": action, "tenant_key": tenant_key, "error_code": self._pool_failure_code(assigned)}
             return self._issue_claim_response(action, tenant_key)
         if action == "reissue_trial_claim":
             assigned = self._ensure_trial_pool(tenant_key)
             if not assigned.get("ok"):
-                return {"ok": False, "action": action, "tenant_key": tenant_key, "error_code": "gemini_pool_unavailable"}
+                return {"ok": False, "action": action, "tenant_key": tenant_key, "error_code": self._pool_failure_code(assigned)}
             return self._issue_claim_response(action, tenant_key)
         if action == "extend_trial":
             result = self._db_extend_trial(tenant_key, _ends_at(request.get("ends_at")), actor)
@@ -369,24 +370,47 @@ class ProvisionerCore:
         except Exception:
             return {"ok": False}
 
+    @staticmethod
+    def _pool_failure_code(result: dict[str, object]) -> str:
+        code = result.get("error_code")
+        # Only allowlisted categories enter logs; provider exceptions can contain secrets.
+        safe_codes = {"pool_unavailable", "runtime_fence_failed", "environment_write_failed",
+                      "health_check_failed", "metadata_record_failed", "finalize_failed"}
+        logging.getLogger(__name__).warning(
+            "Gemini assignment failed: category=%s cleanup_pending=%s",
+            code if isinstance(code, str) and code in safe_codes else "assignment_failed",
+            bool(result.get("cleanup_pending")),
+        )
+        if result.get("cleanup_pending"):
+            return "gemini_pool_cleanup_pending"
+        if code == "pool_unavailable":
+            return "gemini_pool_unavailable"
+        if code in {"runtime_fence_failed", "environment_write_failed", "health_check_failed",
+                    "metadata_record_failed", "finalize_failed"}:
+            return "gemini_pool_" + str(code)
+        return "gemini_pool_assignment_failed"
+
     def _ensure_trial_pool(self, tenant_key: str) -> dict[str, object]:
         try:
             if self._assign_pool_impl is not None:
                 result = self._assign_pool_impl(tenant_key)
             else:
-                from gemini_pool_admin import assign
-                result = assign(Namespace(
-                    runtime_key=tenant_key, base_dir=self.base,
-                    pool_root=Path(os.environ.get("ADMIRA_GEMINI_POOL_ROOT", "/etc/admira/gemini-pool")),
-                    compose_file=ROOT / "compose.yaml", postgres_service="postgres",
-                    db_user="admira_provisioner_login", db_name=os.environ.get("POSTGRES_DB", "admira_control"),
-                    dry_run=False,
-                    broker_socket=Path(os.environ.get("ADMIRA_BROKER_SOCKET", "/run/admira-runtime-broker/broker.sock")),
-                    broker_key_file=Path(os.environ.get("ADMIRA_BROKER_KEY_FILE", "/etc/admira/runtime-broker.key")),
-                ))
+                from gemini_pool_admin import assign, PoolUnavailableError
+                try:
+                    result = assign(Namespace(
+                        runtime_key=tenant_key, base_dir=self.base,
+                        pool_root=Path(os.environ.get("ADMIRA_GEMINI_POOL_ROOT", "/etc/admira/gemini-pool")),
+                        compose_file=ROOT / "compose.yaml", postgres_service="postgres",
+                        db_user="admira_provisioner_login", db_name=os.environ.get("POSTGRES_DB", "admira_control"),
+                        dry_run=False,
+                        broker_socket=Path(os.environ.get("ADMIRA_BROKER_SOCKET", "/run/admira-runtime-broker/broker.sock")),
+                        broker_key_file=Path(os.environ.get("ADMIRA_BROKER_KEY_FILE", "/etc/admira/runtime-broker.key")),
+                    ))
+                except PoolUnavailableError:
+                    return {"ok": False, "error_code": "pool_unavailable"}
             return result if isinstance(result, dict) else {"ok": False}
         except Exception:
-            return {"ok": False}
+            return {"ok": False, "error_code": "assignment_failed"}
 
     def _db_call(self, sql: str, tenant_key: str, *, display_name: str = "", token_hash: str = "",
                  ends_at: str = "", actor: str = "operator-dashboard") -> dict[str, object]:
