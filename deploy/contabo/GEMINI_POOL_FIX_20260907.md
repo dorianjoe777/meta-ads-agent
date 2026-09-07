@@ -35,3 +35,18 @@ tests and 6 operator lifecycle tests. JavaScript syntax check. A disposable
 PostgreSQL database cloned from the production schema verified 6 x 2 slots,
 12 successful assignments, refusal of the thirteenth, idempotent retries,
 release and reuse, licensing release, unhealthy-key exclusion and permissions.
+
+Deployment verified:
+- Source commit 3a0064e6e374 pushed to origin/feat/contabo-multitenant.
+- Live release: /srv/admira/releases/control-plane-3a0064e6e374.
+- Dashboard image: admira-ia-hosted:r99-canary-3a0064e6e374, derived from the
+  previously deployed 990c0780584f image with only the five changed modules/assets.
+- Recovery files: /srv/admira/backups/gemini-3a0064e6e374.
+- Provisioner now starts through /srv/admira/control-plane using the systemd
+  current-release.conf drop-in, rather than staying pinned to the old release.
+- Migration 020 applied; operator projection returns 11 free slots and the
+  dorian-admira assignment. Signed claim generation succeeds after restart.
+- Served JavaScript SHA-256 matches the committed source. UI layout checked
+  in a read-only local fixture. Production account readiness verified via
+  the running operator service and actual provisioner.
+- Disposable validation database removed. No other clients were modified.
