@@ -49,7 +49,7 @@ try {
   }
   // Three-level routes and nested POSTs must reach backend authentication;
   // no client record is modified by these unauthenticated requests.
-  for (const [path, method] of [['codex/primary/status', 'GET'], ['trials/routing-smoke/extend', 'POST']]) {
+  for (const [path, method] of [['codex/primary/status', 'GET'], ['trials/routing-smoke/extend', 'POST'], ['trials/routing-smoke/delete', 'POST']]) {
     const { response, body } = await request(path, {
       method, ...(method === 'POST' ? { body: '{}' } : {}),
     }, false);

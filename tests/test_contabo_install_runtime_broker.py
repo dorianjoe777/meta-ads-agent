@@ -17,6 +17,7 @@ class RuntimeBrokerInstallerTests(unittest.TestCase):
     def test_systemd_unit_retains_home_protection_and_no_secret_output(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("ProtectHome=true", text)
+        self.assertIn("-/etc/admira/central-image-keys", text)
         self.assertNotIn("cat \"$BROKER_KEY_SOURCE\"", text)
         self.assertNotIn("docker login", text)
 

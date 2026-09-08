@@ -266,6 +266,38 @@ class RuntimeBrokerTests(unittest.TestCase):
             self.assertFalse(root.exists())
             suspend.assert_called_once_with(base, "client-001", "suspend")
 
+    def test_purge_removes_regular_verifier_file_and_exchange_but_preserves_other_tenants(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            keys, exchange = root / "keys", root / "exchange"
+            keys.mkdir()
+            for tenant in ("client-001", "client-002"):
+                (keys / tenant).write_text("private fixture")
+                (exchange / tenant / "output").mkdir(parents=True)
+            core = broker.BrokerCore(tenants_base=root / "tenants", spool_base=root / "spool")
+            with patch.dict(os.environ, {"ADMIRA_CENTRAL_IMAGE_KEY_ROOT": str(keys),
+                                         "ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT": str(exchange)}):
+                for _ in range(2):
+                    self.assertTrue(core.handle({"action": "purge", "tenant_id": "client-001"})["ok"])
+            self.assertFalse((keys / "client-001").exists())
+            self.assertFalse((exchange / "client-001").exists())
+            self.assertTrue((keys / "client-002").is_file())
+            self.assertTrue((exchange / "client-002" / "output").is_dir())
+
+    def test_purge_rejects_symlink_verifier_without_removing_target(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            keys = root / "keys"
+            keys.mkdir()
+            target = root / "other-key"
+            target.write_text("private fixture")
+            (keys / "client-001").symlink_to(target)
+            core = broker.BrokerCore(tenants_base=root / "tenants", spool_base=root / "spool")
+            with patch.dict(os.environ, {"ADMIRA_CENTRAL_IMAGE_KEY_ROOT": str(keys)}):
+                with self.assertRaisesRegex(ValueError, "central_image_key_tenant_entry_invalid"):
+                    core.handle({"action": "purge", "tenant_id": "client-001"})
+            self.assertTrue(target.is_file())
+
     def test_candidate_capacity_uses_six_normal_slots(self):
         with patch.dict(os.environ, {
             "ADMIRA_NORMAL_ACTIVE_TENANTS": "6",

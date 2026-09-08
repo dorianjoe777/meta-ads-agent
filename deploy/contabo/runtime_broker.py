@@ -817,9 +817,9 @@ class BrokerCore:
                     return {"ok": False, "error_code": "runtime_suspend_failed"}
                 shutil.rmtree(root)
 
-            for configured, label in (
-                (os.environ.get("ADMIRA_CENTRAL_IMAGE_KEY_ROOT", str(DEFAULT_CENTRAL_IMAGE_KEY_ROOT)), "central image key"),
-                (os.environ.get("ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT", str(DEFAULT_CENTRAL_IMAGE_EXCHANGE_ROOT)), "central image exchange"),
+            for configured, label, is_key in (
+                (os.environ.get("ADMIRA_CENTRAL_IMAGE_KEY_ROOT", str(DEFAULT_CENTRAL_IMAGE_KEY_ROOT)), "central_image_key", True),
+                (os.environ.get("ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT", str(DEFAULT_CENTRAL_IMAGE_EXCHANGE_ROOT)), "central_image_exchange", False),
             ):
                 parent = Path(configured)
                 if not parent.is_absolute():
@@ -831,9 +831,13 @@ class BrokerCore:
                     child = parent / tenant_id
                     if child.exists() or child.is_symlink():
                         child_details = child.lstat()
-                        if child.is_symlink() or not stat.S_ISDIR(child_details.st_mode):
-                            raise ValueError(f"{label} tenant entry invalid")
-                        shutil.rmtree(child)
+                        expected_type = stat.S_ISREG if is_key else stat.S_ISDIR
+                        if child.is_symlink() or not expected_type(child_details.st_mode):
+                            raise ValueError(f"{label}_tenant_entry_invalid")
+                        if is_key:
+                            child.unlink()
+                        else:
+                            shutil.rmtree(child)
         return {"ok": True, "removed": True, "tenant_id": tenant_id}
 
     def handle(self, request: object) -> dict[str, object]:
