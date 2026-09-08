@@ -9,6 +9,20 @@ const origin = (() => {
 })();
 const proxyKey = process.env.ADMIRA_OPERATOR_PROXY_KEY;
 
+async function requestBody(req) {
+  // Vercel's Node runtime may already expose a parsed body. Prefer it when
+  // available because the IncomingMessage stream can be consumed by the
+  // platform before this handler runs.
+  if (req.body !== undefined && req.body !== null) {
+    if (Buffer.isBuffer(req.body)) return req.body;
+    if (typeof req.body === 'string') return Buffer.from(req.body);
+    return Buffer.from(JSON.stringify(req.body));
+  }
+  const chunks = [];
+  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
 export default async function handler(req, res) {
   if (!origin || !proxyKey) return res.status(503).json({error:'proxy_not_configured'});
   const incoming = new URL(req.url || '/', 'https://dashboard.uboost.lat');
@@ -29,11 +43,11 @@ export default async function handler(req, res) {
   headers.set('x-admira-operator-proxy-key', proxyKey);
   headers.set('host', origin.host);
   const hasBody = !['GET','HEAD'].includes(req.method);
+  const body = hasBody ? await requestBody(req) : undefined;
   const response = await fetch(target, {
     method:req.method,
     headers,
-    body:hasBody ? req : undefined,
-    ...(hasBody ? {duplex:'half'} : {}),
+    body:hasBody && body.length ? body : undefined,
   });
   res.status(response.status);
   for (const [key,value] of response.headers) {
