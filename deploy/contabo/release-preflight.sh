@@ -68,6 +68,8 @@ resolve_compose_value() {
       [[ -n "${ADMIRA_CENTRAL_IMAGE_READY+x}" ]] && { printf '%s' "$ADMIRA_CENTRAL_IMAGE_READY"; return; } ;;
     CENTRAL_IMAGE_IMAGE)
       [[ -n "${CENTRAL_IMAGE_IMAGE+x}" ]] && { printf '%s' "$CENTRAL_IMAGE_IMAGE"; return; } ;;
+    OPERATOR_DASHBOARD_IMAGE)
+      [[ -n "${OPERATOR_DASHBOARD_IMAGE+x}" ]] && { printf '%s' "$OPERATOR_DASHBOARD_IMAGE"; return; } ;;
     ADMIRA_CENTRAL_CODEX_AUTH_ROOT)
       [[ -n "${ADMIRA_CENTRAL_CODEX_AUTH_ROOT+x}" ]] && { printf '%s' "$ADMIRA_CENTRAL_CODEX_AUTH_ROOT"; return; } ;;
     ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS)
@@ -244,6 +246,10 @@ else
 fi
 CENTRAL_IMAGE_PLACEHOLDER='admira-ia-hosted:r99-canary-000000000000'
 CENTRAL_IMAGE_IMAGE="$(resolve_compose_value CENTRAL_IMAGE_IMAGE "$CENTRAL_IMAGE_PLACEHOLDER")"
+OPERATOR_DASHBOARD_IMAGE="$(resolve_compose_value OPERATOR_DASHBOARD_IMAGE "$CENTRAL_IMAGE_IMAGE")"
+if [[ ! "$OPERATOR_DASHBOARD_IMAGE" =~ ^admira-ia-hosted:r(91|99)-canary-[0-9a-f]{12}$ ]]; then
+  fail 'OPERATOR_DASHBOARD_IMAGE must be a pinned hosted canary tag'
+fi
 CENTRAL_IMAGE_READY="$(resolve_compose_value ADMIRA_CENTRAL_IMAGE_READY false | tr '[:upper:]' '[:lower:]')"
 CENTRAL_CODEX_ACCOUNT_IDS="$(resolve_compose_value ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS 'primary,secondary')"
 CENTRAL_CODEX_AUTH_ROOT="$(resolve_compose_value ADMIRA_CENTRAL_CODEX_AUTH_ROOT '/app/runtime/hermes/codex-auth-pool')"
@@ -325,7 +331,7 @@ if [[ "$MODE" == server ]] && docker compose --project-directory "$ROOT_DIR" -f 
     --profile operator-dashboard ps --status running --services 2>/dev/null | grep -qx operator-dashboard; then
   CHECK_OPERATOR=true
 fi
-if [[ "$CHECK_OPERATOR" == true && "$CENTRAL_IMAGE_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" ]]; then
+if [[ "$CHECK_OPERATOR" == true && "$OPERATOR_DASHBOARD_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" ]]; then
   fail 'operator dashboard requires a real pinned CENTRAL_IMAGE_IMAGE, not the dormant placeholder'
 fi
 operator_setup_cidrs="$(resolve_compose_value ADMIRA_OPERATOR_SETUP_CIDRS '127.0.0.1/32,::1/128')"
@@ -470,6 +476,9 @@ if [[ "$MODE" == server ]]; then
     ok 'legacy host-wide Gemini key is absent'
   fi
   if docker image inspect admira-ia:r90 >/dev/null 2>&1; then ok 'tenant image admira-ia:r90 is present'; else fail 'tenant image admira-ia:r90 is missing'; fi
+  if [[ "$CHECK_OPERATOR" == true ]] && ! docker image inspect "$OPERATOR_DASHBOARD_IMAGE" >/dev/null 2>&1; then
+    fail "pinned operator dashboard image is missing: $OPERATOR_DASHBOARD_IMAGE"
+  fi
   if [[ "$CENTRAL_IMAGE_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" ]]; then
     warn 'pinned central r99 canary image is not selected; central images remain dormant'
   elif docker image inspect "$CENTRAL_IMAGE_IMAGE" >/dev/null 2>&1; then

@@ -937,15 +937,17 @@ class OperatorState:
     def _action_failure(code: object) -> OperatorActionError:
         safe = str(code or "")
         invalid = {
+            "trial_delete_confirmation_required",
             "invalid_tenant_key", "invalid_display_name", "invalid_trial_extension",
             "invalid_customer_gemini_key", "invalid_actor",
         }
-        conflict = {"trial_not_active", "trial_create_failed", "trial_update_failed", "trial_expire_failed"}
+        conflict = {"trial_not_active", "trial_create_failed", "trial_update_failed", "trial_expire_failed", "trial_delete_not_allowed"}
         if safe in invalid:
             return OperatorActionError(safe, 400)
         if safe in conflict:
             return OperatorActionError(safe, 409)
         if safe in {
+            "trial_delete_pending",
             "gemini_pool_unavailable", "gemini_pool_assignment_failed", "gemini_pool_cleanup_pending",
             "gemini_pool_runtime_fence_failed", "gemini_pool_environment_write_failed",
             "gemini_pool_health_check_failed", "gemini_pool_metadata_record_failed",
@@ -1089,6 +1091,15 @@ class OperatorState:
             "action": "expire_trial", "tenant_key": key, "actor_id": "operator-dashboard",
         })
         return {"ok": True, "runtime_key": key, "lifecycle_state": "grace"}
+
+    def delete_trial(self, runtime_key: str, confirmation: str, tenant_created_at: str) -> dict[str, Any]:
+        key = self._customer_runtime_key(runtime_key)
+        if confirmation != key or not tenant_created_at or len(tenant_created_at) > 64:
+            raise OperatorActionError("trial_delete_confirmation_required", 400)
+        self._provisioner_action({"action": "delete_trial", "tenant_key": key,
+                                  "confirmation": confirmation, "tenant_created_at": tenant_created_at,
+                                  "actor_id": "operator-dashboard"})
+        return {"ok": True, "runtime_key": key, "deleted": True}
 
     def license_trial(self, runtime_key: str, gemini_api_key: str) -> dict[str, Any]:
         key = self._customer_runtime_key(runtime_key)
@@ -1434,6 +1445,12 @@ class OperatorHandler(BaseHTTPRequestHandler):
         elif match := re.fullmatch(r"/api/operator/trials/([a-z0-9][a-z0-9-]{2,62})/expire", path):
             try:
                 result = self.state.expire_trial(match[1])
+            except OperatorActionError as exc:
+                raise RequestError(exc.code, exc.status) from None
+        elif match := re.fullmatch(r"/api/operator/trials/([a-z0-9][a-z0-9-]{2,62})/delete", path):
+            try:
+                result = self.state.delete_trial(match[1], self._string(body, "confirmation"),
+                                                 self._string(body, "tenant_created_at"))
             except OperatorActionError as exc:
                 raise RequestError(exc.code, exc.status) from None
         elif match := re.fullmatch(r"/api/operator/trials/([a-z0-9][a-z0-9-]{2,62})/license", path):

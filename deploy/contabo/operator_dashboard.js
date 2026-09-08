@@ -59,6 +59,9 @@
       gemini_health_check_failed: "Gemini no validó la clave. Revisa sus permisos y vuelve a introducirla.",
       gemini_registration_failed: "La clave no pudo registrarse. Revisa el servicio de control e inténtalo de nuevo.",
       gemini_status_unavailable: "No se pudo consultar el inventario Gemini. Vuelve a intentarlo.",
+      trial_delete_confirmation_required: "Confirma la cuenta que deseas eliminar.",
+      trial_delete_not_allowed: "No se puede eliminar esta cuenta: debe ser una prueba y no tener otra eliminación en curso.",
+      trial_delete_pending: "La cuenta quedó bloqueada para eliminación, pero la limpieza no terminó. Pulsa Eliminar nuevamente para completarla.",
       sponsorship_status_unavailable: "No se pudo consultar la vigencia de los clientes.",
       invalid_sponsorship_extension: "Elige un cliente activo y una fecha posterior a su vigencia actual, dentro de los próximos 365 días.",
       sponsorship_update_failed: "No se pudo guardar la ampliación. Revisa el estado del servicio antes de reintentar.",
@@ -852,8 +855,9 @@
           : lifecycle === "grace" || lifecycle === "trial_expired"
             ? [["extend", "Ampliar"], ["license", "Licenciar"]]
             : [];
+        if (["trial", "pending_claim", "grace", "trial_expired"].includes(lifecycle)) actionSet.push(["delete", "Eliminar"]);
         actionSet.forEach(([action, label]) => {
-          const button = textElement("button", "table-action" + (action === "expire" ? " is-danger" : ""), label);
+          const button = textElement("button", "table-action" + (["expire", "delete"].includes(action) ? " is-danger" : ""), label);
           button.type = "button"; button.dataset.trialAction = action; button.dataset.runtimeKey = String(item.runtime_key || "");
           actions.append(button);
         });
@@ -945,6 +949,26 @@
 
   async function trialAction(action, runtimeKey) {
     const encoded = encodeURIComponent(runtimeKey);
+    if (action === "delete") {
+      const createdAt = (state.trials || []).find((item) => item.runtime_key === runtimeKey)?.tenant_created_at;
+      const ok = await confirmAction({ title: "¿Eliminar completamente esta cuenta?",
+        description: runtimeKey + ": se borrarán su espacio, historial, archivos y vinculación con Telegram, y se liberará su cupo Gemini. No habrá período de gracia. Esta acción no se puede deshacer.",
+        accept: "Eliminar definitivamente", danger: true });
+      if (!ok) return;
+      const buttons = Array.from(document.querySelectorAll("[data-trial-action]"))
+        .filter((button) => button.dataset.runtimeKey === runtimeKey);
+      buttons.forEach((button) => { button.disabled = true; });
+      try {
+        await request("/api/operator/trials/" + encoded + "/delete", {
+          method: "POST", body: JSON.stringify({ confirmation: runtimeKey, tenant_created_at: createdAt }) });
+        await Promise.all([refreshCustomers(), refreshGemini(), refreshSponsorship()]);
+        setNotice("La cuenta " + runtimeKey + " fue eliminada completamente.", "success");
+      } catch (error) {
+        setNotice(messageFor(error, "No se pudo eliminar la cuenta. Vuelve a intentarlo."), "error");
+        await Promise.all([refreshCustomers(), refreshGemini(), refreshSponsorship()]);
+      } finally { buttons.forEach((button) => { button.disabled = false; }); }
+      return;
+    }
     if (action === "claim") { try { const data = await request("/api/operator/trials/" + encoded + "/claim", { method: "POST", body: "{}" }); showClaim(data?.claim_url || data?.url || data?.deep_link || ""); await Promise.all([refreshCustomers(), refreshGemini()]); } catch (e) { setNotice(messageFor(e, "No se pudo generar el enlace temporal."), "error"); } return; }
     state.trialActionKey = runtimeKey;
     if (action === "extend") { const item = (state.trials || []).find((x) => x.runtime_key === runtimeKey); const end = Date.parse(item?.trial_ends_at || ""); const input = $("#extend-trial-end"); input.min = localDateTimeValue(new Date(Date.now() + 60000)); input.max = localDateTimeValue(new Date(Date.now() + 365 * 86400000)); input.value = Number.isFinite(end) ? localDateTimeValue(new Date(end)) : ""; $("#extend-trial-error").textContent = ""; $("#extend-trial-dialog").showModal(); input.focus(); return; }

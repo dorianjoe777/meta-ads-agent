@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from tenant_provisioner import ProvisionerCore, ReplayWindow, sign_body
@@ -51,6 +52,50 @@ class FakeProvisioner(ProvisionerCore):
 
 
 class ProvisionerContractTests(unittest.TestCase):
+    def test_delete_requires_confirmation_and_account_identity(self):
+        core = FakeProvisioner([])
+        core._db_call = Mock()
+        for extra in ({}, {"confirmation": "customer-001"}, {"confirmation": "wrong", "tenant_created_at": "2026-08-31T12:00:00Z"}):
+            result = core.handle({"action": "delete_trial", "tenant_key": "customer-001", **extra})
+            self.assertEqual(result["error_code"], "trial_delete_confirmation_required")
+        core._db_call.assert_not_called()
+
+    def test_delete_fences_before_purge_and_only_finalizes_after_success(self):
+        claim = "01234567-89ab-cdef-0123-456789abcdef"
+        request = {"action": "delete_trial", "tenant_key": "customer-001",
+                   "confirmation": "customer-001", "tenant_created_at": "2026-08-31T12:00:00Z"}
+        for prepare_ok, purge_ok, finish_ok in ((False, True, True), (True, False, True),
+                                               (True, True, False), (True, True, True)):
+            with self.subTest(prepare_ok=prepare_ok, purge_ok=purge_ok, finish_ok=finish_ok):
+                events = []
+                core = FakeProvisioner([])
+                def db(sql, key, **kwargs):
+                    if "prepare" in sql:
+                        events.append("prepare")
+                        self.assertEqual(kwargs["created_at"], request["tenant_created_at"])
+                        return {"ok": prepare_ok, "data": {"claim_id": claim}}
+                    events.append("finish")
+                    self.assertEqual(kwargs["token_hash"], claim)
+                    return {"ok": finish_ok, "data": {"deleted": finish_ok}}
+                def purge(key):
+                    events.append("purge")
+                    self.assertEqual(key, "customer-001")
+                    return {"ok": purge_ok}
+                core._db_call = db
+                core._purge_trial_workspace = purge
+                result = core.handle(request)
+                self.assertEqual(events, ["prepare"] + (["purge"] if prepare_ok else [])
+                                 + (["finish"] if prepare_ok and purge_ok else []))
+                self.assertEqual(result["ok"], prepare_ok and purge_ok and finish_ok)
+
+    def test_delete_retry_after_completed_cleanup_does_not_purge_again(self):
+        core = FakeProvisioner([])
+        core._db_call = Mock(return_value={"ok": True, "data": {"already_deleted": True}})
+        core._purge_trial_workspace = Mock()
+        self.assertTrue(core.handle({"action": "delete_trial", "tenant_key": "customer-001",
+            "confirmation": "customer-001", "tenant_created_at": "2026-08-31T12:00:00Z"})["deleted"])
+        core._purge_trial_workspace.assert_not_called()
+
     def test_signed_request_is_single_use_and_survives_restart(self):
         key = b"x" * 32
         with tempfile.TemporaryDirectory() as directory:

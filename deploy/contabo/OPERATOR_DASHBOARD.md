@@ -261,3 +261,27 @@ an `auth.json`; the second account, real provider/failover canary and Gemini
 trial-pool credentials remain operator tasks. The central image broker and
 recovery remain disabled by their readiness flags. The recoverable deployment
 backup is `/srv/admira/backups/operator-lifecycle-caeb723-20260831T201433Z/`.
+
+## Permanent trial deletion
+
+The trial table's **Eliminar** action requires a named confirmation and sends
+the account creation timestamp to reject stale tabs after a name is reused.
+Apply migration `021_operator_delete_trial.sql` and deploy the matching
+provisioner and dashboard before publishing the JavaScript.
+
+The provisioner claims deletion in PostgreSQL, fencing lifecycle changes,
+then asks the host runtime broker to purge that one workspace. Only after the
+broker confirms cleanup does it delete the tenant and dependent records.
+Licensed accounts are rejected. The Gemini pool project and shared key stay
+intact; the deleted tenant's assignment is released. A cleanup failure returns
+a retryable error; use **Eliminar** again to finish the same deletion claim.
+There is no customer grace period for this action.
+
+The SQL validator `db/validate_operator_delete_trial.sql` rolls back its
+fixtures. End-to-end validation must use a newly created disposable account,
+never an existing customer's account.
+
+Set `OPERATOR_DASHBOARD_IMAGE` to an immutable hosted canary tag to deploy the
+dashboard independently of `CENTRAL_IMAGE_IMAGE`. Without an override, the
+existing broker image remains the default. Recreate only the
+`operator-dashboard` service using `up -d --no-deps operator-dashboard`.

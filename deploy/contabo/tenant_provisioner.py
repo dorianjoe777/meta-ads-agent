@@ -47,7 +47,7 @@ BOT_RE = re.compile(r"^[A-Za-z0-9_]{5,32}$")
 ACTOR_RE = re.compile(r"^[A-Za-z0-9._:-]{3,200}$")
 SAFE_CODE = re.compile(r"^[a-z0-9_]{3,80}$")
 LICENSE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
-ALLOWED = frozenset({"create_trial", "reissue_trial_claim", "extend_trial", "expire_trial", "license_trial"})
+ALLOWED = frozenset({"create_trial", "reissue_trial_claim", "extend_trial", "expire_trial", "license_trial", "delete_trial"})
 
 
 def _canonical(value: object) -> bytes:
@@ -271,6 +271,7 @@ class ProvisionerCore:
         self._assign_pool_impl = assign_pool
         self._create_license_impl = create_license
         self._install_license_impl = install_license
+        self._operation_lock = threading.RLock()
 
     @staticmethod
     def _trusted_license_url(value: str) -> str:
@@ -286,11 +287,41 @@ class ProvisionerCore:
         return "https://admiraia.uboost.lat/api/admin/licenses"
 
     def handle(self, request: dict[str, object]) -> dict[str, object]:
+        # Serialize host lifecycle operations so deletion cannot overlap a
+        # license installation or workspace creation in this daemon.
+        with self._operation_lock:
+            return self._handle(request)
+
+    def _handle(self, request: dict[str, object]) -> dict[str, object]:
         action = str(request.get("action") or "")
         if action not in ALLOWED:
             raise ValueError("unsupported_action")
         tenant_key = _tenant(request.get("tenant_key"))
         actor = _actor(request.get("actor_id", "operator-dashboard"))
+        if action == "delete_trial":
+            if request.get("confirmation") != tenant_key or not request.get("tenant_created_at"):
+                return {"ok": False, "error_code": "trial_delete_confirmation_required"}
+            prepared = self._db_call(
+                "SELECT admira.operator_prepare_trial_delete(:'tenant_key', :'actor_id', :'created_at'::timestamptz);\n",
+                tenant_key, actor=actor, created_at=str(request["tenant_created_at"]),
+            )
+            if not prepared.get("ok"):
+                return {"ok": False, "error_code": "trial_delete_not_allowed"}
+            data = prepared.get("data", {})
+            if data.get("already_deleted"):
+                return {"ok": True, "deleted": True}
+            claim = str(data.get("claim_id") or "")
+            if not re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", claim):
+                return {"ok": False, "error_code": "trial_delete_pending"}
+            if not self._purge_trial_workspace(tenant_key).get("ok"):
+                return {"ok": False, "error_code": "trial_delete_pending"}
+            finished = self._db_call(
+                "SELECT admira.operator_finish_trial_delete(:'tenant_key', :'token_hash'::uuid);\n",
+                tenant_key, token_hash=claim, actor=actor,
+            )
+            if not finished.get("ok") or not finished.get("data", {}).get("deleted"):
+                return {"ok": False, "error_code": "trial_delete_pending"}
+            return {"ok": True, "deleted": True}
         if action == "create_trial":
             display_name = _display(request.get("display_name"))
             provisioned = self._provision_tenant(tenant_key)
@@ -370,6 +401,14 @@ class ProvisionerCore:
         except Exception:
             return {"ok": False}
 
+    def _purge_trial_workspace(self, tenant_key: str) -> dict[str, object]:
+        try:
+            from runtime_broker import BrokerClient, DEFAULT_SCHEDULER_KEY_FILE
+            return BrokerClient(key_file=DEFAULT_SCHEDULER_KEY_FILE, timeout=30).request(
+                {"action": "purge", "tenant_id": tenant_key})
+        except Exception:
+            return {"ok": False}
+
     @staticmethod
     def _pool_failure_code(result: dict[str, object]) -> str:
         code = result.get("error_code")
@@ -413,18 +452,18 @@ class ProvisionerCore:
             return {"ok": False, "error_code": "assignment_failed"}
 
     def _db_call(self, sql: str, tenant_key: str, *, display_name: str = "", token_hash: str = "",
-                 ends_at: str = "", actor: str = "operator-dashboard") -> dict[str, object]:
+                 ends_at: str = "", actor: str = "operator-dashboard", created_at: str = "") -> dict[str, object]:
         """Run a fixed query with psql variables; no secret is transported here."""
         shell = (
             'export PGPASSWORD="$(cat /run/secrets/provisioner_db_password)"; '
             'exec psql -v ON_ERROR_STOP=1 -X -qAt -U admira_provisioner_login '
             '-d "$POSTGRES_DB" -v tenant_key="$1" -v display_name="$2" '
-            '-v token_hash="$3" -v ends_at="$4" -v actor_id="$5"'
+            '-v token_hash="$3" -v ends_at="$4" -v actor_id="$5" -v created_at="$6"'
         )
         command = [
             "docker", "compose", "--project-directory", str(ROOT), "-f", str(ROOT / "compose.yaml"),
             "exec", "-T", "postgres", "sh", "-ec", shell, "admira-provisioner",
-            tenant_key, display_name, token_hash, ends_at, actor,
+            tenant_key, display_name, token_hash, ends_at, actor, created_at,
         ]
         try:
             completed = subprocess.run(command, input=sql, text=True, capture_output=True, check=False, timeout=30)

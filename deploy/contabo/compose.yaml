@@ -249,10 +249,9 @@ services:
   # tunnel; the hosted image supplies the Codex CLI for bounded device auth.
   operator-dashboard:
     profiles: ["operator-dashboard"]
-    # This is the same immutable hosted canary selected for the dormant image
-    # broker. It contains the pinned Codex CLI; preflight rejects mutable or
-    # malformed CENTRAL_IMAGE_IMAGE values before operators enable the profile.
-    image: ${CENTRAL_IMAGE_IMAGE:-admira-ia-hosted:r99-canary-000000000000}
+    # Allow independent dashboard releases while retaining the hosted image's
+    # pinned Codex CLI and the existing broker image as the default.
+    image: ${OPERATOR_DASHBOARD_IMAGE:-${CENTRAL_IMAGE_IMAGE:-admira-ia-hosted:r99-canary-000000000000}}
     restart: unless-stopped
     init: true
     user: "${ADMIRA_SERVICE_UID:-1001}:${ADMIRA_SERVICE_GID:-1001}"

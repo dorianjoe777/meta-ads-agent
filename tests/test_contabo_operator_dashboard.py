@@ -81,7 +81,7 @@ class ContaboOperatorDashboardTests(unittest.TestCase):
     def test_operator_profile_is_loopback_and_isolated(self):
         service = self.compose.split("  operator-dashboard:\n", 1)[1].split("\n  telegram-poller:\n", 1)[0]
         self.assertIn('profiles: ["operator-dashboard"]', service)
-        self.assertIn("image: ${CENTRAL_IMAGE_IMAGE", service)
+        self.assertIn("image: ${OPERATOR_DASHBOARD_IMAGE:-${CENTRAL_IMAGE_IMAGE", service)
         self.assertIn('"127.0.0.1:${ADMIRA_OPERATOR_PORT:-8791}:8791"', service)
         self.assertIn("operator_db_password", service)
         self.assertIn("./secrets/operator-password", service)
@@ -203,8 +203,8 @@ class ContaboOperatorDashboardTests(unittest.TestCase):
             self.assertFalse(mounts[target]["bind"]["create_host_path"])
         self.assertEqual(services["central-image-broker"]["profiles"], ["central-images"])
         self.assertEqual(services["runtime-worker"]["environment"]["ADMIRA_CENTRAL_IMAGE_READY"], "false")
-        self.assertEqual(service["environment"]["ADMIRA_OPERATOR_COOKIE_SECURE"], "false")
-        self.assertEqual(service["environment"]["ADMIRA_OPERATOR_ALLOWED_HOSTS"], "localhost,127.0.0.1,::1")
+        self.assertEqual(service["environment"]["ADMIRA_OPERATOR_COOKIE_SECURE"], "true")
+        self.assertEqual(service["environment"]["ADMIRA_OPERATOR_ALLOWED_HOSTS"], "localhost,127.0.0.1,::1,origin-dashboard.uboost.lat")
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertRegex(dockerfile, r"ARG CODEX_CLI_VERSION=\d+\.\d+\.\d+")
         self.assertIn('npm install -g "@openai/codex@${CODEX_CLI_VERSION}"', dockerfile)

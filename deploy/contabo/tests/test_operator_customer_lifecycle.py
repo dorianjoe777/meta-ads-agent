@@ -56,6 +56,20 @@ def trial_row(key="customer-001", name="Customer One"):
 
 
 class CustomerLifecycleStateTests(unittest.TestCase):
+    def test_delete_confirmation_and_safe_failure(self):
+        fake = FakeProvisioner({"ok": True, "deleted": True})
+        state, _ = self.make_state([], fake)
+        with self.assertRaises(OperatorActionError):
+            state.delete_trial("customer-001", "other", "2026-08-31T12:00:00Z")
+        self.assertEqual(fake.requests, [])
+        self.assertTrue(state.delete_trial("customer-001", "customer-001", "2026-08-31T12:00:00Z")["deleted"])
+        self.assertEqual(fake.requests[0]["action"], "delete_trial")
+        for code, status in (("trial_delete_not_allowed", 409), ("trial_delete_pending", 503)):
+            fake.response = {"ok": False, "error_code": code}
+            with self.assertRaises(OperatorActionError) as raised:
+                state.delete_trial("customer-001", "customer-001", "2026-08-31T12:00:00Z")
+            self.assertEqual(raised.exception.status, status)
+
     def make_state(self, rows, provisioner):
         calls = []
         return OperatorState(
