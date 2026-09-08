@@ -273,10 +273,11 @@ services:
       ADMIRA_OPERATOR_PASSWORD_FILE: /var/lib/admira/operator-password/password.hash
       ADMIRA_OPERATOR_BIND: 0.0.0.0
       ADMIRA_OPERATOR_PORT: "8791"
-      # Plain HTTP is encrypted by the SSH tunnel. The Host/Origin allowlist
-      # permits loopback names only, and the port is never publicly published.
-      ADMIRA_OPERATOR_COOKIE_SECURE: "false"
-      ADMIRA_OPERATOR_ALLOWED_HOSTS: "localhost,127.0.0.1,::1"
+      # The SSH tunnel and the Vercel HTTPS proxy both terminate in this
+      # service. The operator origin is authenticated separately by Caddy;
+      # the dashboard still rejects every other host and origin.
+      ADMIRA_OPERATOR_COOKIE_SECURE: "true"
+      ADMIRA_OPERATOR_ALLOWED_HOSTS: "localhost,127.0.0.1,::1,origin-dashboard.uboost.lat"
       # Docker may present a bridge gateway for tunnel requests. Pin only its
       # observed /32 (or /128) during setup; never trust forwarded headers.
       ADMIRA_OPERATOR_SETUP_CIDRS: "${ADMIRA_OPERATOR_SETUP_CIDRS:-127.0.0.1/32,::1/128}"

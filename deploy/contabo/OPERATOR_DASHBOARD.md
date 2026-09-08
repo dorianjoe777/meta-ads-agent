@@ -1,12 +1,14 @@
 # Internal operator dashboard
 
-This is an operator-only control surface, not a buyer dashboard. It publishes
-exactly `127.0.0.1:8791` on the VPS and has no Docker socket, tenant volumes,
-Telegram token, or public endpoint. Customer lifecycle actions cross only an
-authenticated Unix socket to the host-side `admira-tenant-provisioner` daemon;
-the dashboard itself still has no direct Docker, tenant-root, pool-secret, or
-provisioner-database authority. Never open 8791 in a firewall or put this
-service behind a public reverse proxy.
+This is an operator-only control surface, not a buyer dashboard. The service
+listens on `127.0.0.1:8791` on the VPS and has no Docker socket, tenant volumes,
+Telegram token, or direct public endpoint. Customer lifecycle actions cross
+only an authenticated Unix socket to the host-side
+`admira-tenant-provisioner` daemon; the dashboard itself still has no direct
+Docker, tenant-root, pool-secret, or provisioner-database authority. Never
+open 8791 in a firewall. The mobile entry point is the separate Vercel project
+at `https://dashboard.uboost.lat`, which reaches the VPS only through the
+authenticated `origin-dashboard.uboost.lat` Caddy route.
 
 For the current verified VPS deployment, inventory and remaining gates, read
 [DASHBOARD_STATUS.md](DASHBOARD_STATUS.md) before changing accounts or provider

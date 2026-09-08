@@ -153,9 +153,12 @@ been created, restricted and validated out of band.
 
 The opt-in `operator-dashboard` profile serves a Spanish operator panel on
 `127.0.0.1:8791` only. Follow [OPERATOR_DASHBOARD.md](OPERATOR_DASHBOARD.md) for
-the exact private-directory, migration, first-password and SSH-tunnel sequence.
+the exact private-directory, migration, first-password and access sequence.
 On the configured Mac, [open-operator-dashboard.command](open-operator-dashboard.command)
-opens that tunnel using the existing `admira-contabo` alias.
+opens the SSH tunnel using the existing `admira-contabo` alias. For mobile
+access, the separate Vercel project serves `https://dashboard.uboost.lat` and
+proxies only authenticated `/api/operator/*` requests through the VPS origin
+`https://origin-dashboard.uboost.lat`; port 8791 remains closed to the public.
 For the verified VPS snapshot, actual customer inventory and the difference
 between configured and pending work, see [DASHBOARD_STATUS.md](DASHBOARD_STATUS.md).
 
