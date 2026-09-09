@@ -14,13 +14,17 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 import re
 import secrets
 import stat
+import ssl
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Callable, Iterable, TextIO
@@ -46,6 +50,7 @@ LICENSE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 SECRET_REF_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1"
 GEMINI_HEALTH_TIMEOUT_SECONDS = 8
+GEMINI_HEALTH_MAX_ATTEMPTS = 3
 GEMINI_HEALTH_MAX_RESPONSE_BYTES = 128 * 1024
 PRIVATE_INPUT_MAX_CHARS = 16 * 1024
 
@@ -100,19 +105,37 @@ def check_gemini_api_key(value: str, *, opener: Callable[..., object] | None = N
         },
         method="GET",
     )
-    try:
-        open_url = opener or urllib.request.urlopen
-        response = open_url(request, timeout=GEMINI_HEALTH_TIMEOUT_SECONDS)
-        with response:
-            raw = response.read(GEMINI_HEALTH_MAX_RESPONSE_BYTES + 1)
-        if len(raw) > GEMINI_HEALTH_MAX_RESPONSE_BYTES:
+    open_url = opener or urllib.request.urlopen
+    for attempt in range(1, GEMINI_HEALTH_MAX_ATTEMPTS + 1):
+        retryable = False
+        category = "invalid_response"
+        try:
+            response = open_url(request, timeout=GEMINI_HEALTH_TIMEOUT_SECONDS)
+            with response:
+                raw = response.read(GEMINI_HEALTH_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > GEMINI_HEALTH_MAX_RESPONSE_BYTES:
+                return False
+            payload = json.loads(raw.decode("utf-8"))
+            return isinstance(payload, dict) and isinstance(payload.get("models"), list) and bool(payload["models"])
+        except urllib.error.HTTPError as exc:
+            retryable = exc.code in {408, 429, 500, 502, 503, 504}
+            category = "http_" + str(int(exc.code))
+            exc.close()
+        except (urllib.error.URLError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            retryable = not isinstance(reason, ssl.SSLCertVerificationError)
+            category = "transport" if retryable else "tls_verification"
+        except Exception:
+            pass
+        # Log only fixed categories, never exceptions, URLs, keys or bodies.
+        logging.getLogger(__name__).warning(
+            "Gemini health check: category=%s attempt=%s retryable=%s",
+            category, attempt, retryable,
+        )
+        if not retryable or attempt == GEMINI_HEALTH_MAX_ATTEMPTS:
             return False
-        payload = json.loads(raw.decode("utf-8"))
-        return isinstance(payload, dict) and isinstance(payload.get("models"), list) and bool(payload["models"])
-    except Exception:
-        # Never expose provider response bodies, URLs with credentials, or
-        # transport details through the operator CLI.
-        return False
+        time.sleep(0.25 * attempt)
+    return False
 
 
 def gemini_health_check(env_path: Path) -> bool:

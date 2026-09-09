@@ -92,9 +92,16 @@ def hosted_meta_oauth_gate(payload):
             if authorization.get("status") == "authorized_pending_persistence":
                 selected = dashboard.social_oauth_select({})
                 if selected.get("selected") is True and selected.get("verified_persisted") is True:
-                    # Live context now contains the chosen business; continue
-                    # the existing interview in this same turn.
-                    return None
+                    # This numeric reply belongs to the deterministic gate.
+                    # Passing it to a fresh model conversation loses the list
+                    # that gave the numbers meaning and can repeat selection.
+                    return {"ok": True, "reply": (
+                        "Your Facebook Page and ad account are saved and verified.\n\n"
+                        "To continue, tell me which product or service you want to work on first."
+                        if english else
+                        "La Página de Facebook y la cuenta publicitaria quedaron guardadas y verificadas.\n\n"
+                        "Para continuar, cuéntame qué producto o servicio quieres trabajar primero."
+                    )}
                 raise ValueError("workspace_selection_not_persisted")
             from meta_selection_authorization import sanitize_inventory
             inventory = sanitize_inventory(dashboard._meta_oauth_selection_inventory())

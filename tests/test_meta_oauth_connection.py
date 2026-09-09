@@ -57,7 +57,9 @@ class MetaOAuthConnectionTests(unittest.TestCase):
                  patch.object(self.dashboard, "_verify_meta_oauth_workspace_persistence",
                               side_effect=lambda *_: self.dashboard._meta_oauth_connection()), \
                  patch.object(self.dashboard, "log_action"):
-                self.assertIsNone(gate({**base, "message": "61, 60", "update_id": 102}))
+                result = gate({**base, "message": "61, 60", "update_id": 102})
+                self.assertIn("guardadas y verificadas", result["reply"])
+                self.assertNotIn("PÁGINAS DE FACEBOOK:", result["reply"])
             saved = self.dashboard._meta_oauth_connection()
             self.assertEqual(saved["active_page_id"], "page_61")
             self.assertEqual(saved["active_ad_account_id"], "act_60")

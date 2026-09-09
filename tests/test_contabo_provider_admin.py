@@ -11,6 +11,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from unittest.mock import Mock
+from urllib.error import HTTPError, URLError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -269,6 +271,38 @@ class ProviderAdminTests(unittest.TestCase):
         self.assertEqual(request.get_header("X-goog-api-key"), key)
         self.assertEqual(request.get_header("X-goog-api-client"), "admira-hosted/r99")
         self.assertEqual(kwargs["timeout"], provider_admin.GEMINI_HEALTH_TIMEOUT_SECONDS)
+
+    def test_gemini_health_check_recovers_from_transient_transport_or_provider_failure(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=None)
+        response.read.return_value = b'{"models":[{"name":"models/gemini-test"}]}'
+        for failure in (URLError(TimeoutError("private transport detail")),
+                        HTTPError("https://private.invalid", 503, "private provider detail", {}, None),
+                        HTTPError("https://private.invalid", 429, "private provider detail", {}, None)):
+            opener = Mock(side_effect=[failure, response])
+            with patch.object(provider_admin.time, "sleep") as sleep, self.assertLogs("provider_admin", "WARNING") as logs:
+                self.assertTrue(provider_admin.check_gemini_api_key("health-check-key-value-1234567890", opener=opener))
+            self.assertEqual(opener.call_count, 2)
+            sleep.assert_called_once_with(0.25)
+            self.assertNotIn("private", str(logs.output))
+            self.assertNotIn("health-check-key-value", str(logs.output))
+
+    def test_gemini_health_check_bounds_retries_and_fails_closed(self):
+        opener = Mock(side_effect=URLError(TimeoutError("private")))
+        with patch.object(provider_admin.time, "sleep") as sleep, self.assertLogs("provider_admin", "WARNING"):
+            self.assertFalse(provider_admin.check_gemini_api_key("health-check-key-value-1234567890", opener=opener))
+        self.assertEqual(opener.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_gemini_health_check_does_not_retry_rejected_keys_or_tls_certificates(self):
+        for failure in (HTTPError("https://private.invalid", 403, "private", {}, None),
+                        URLError(provider_admin.ssl.SSLCertVerificationError("private"))):
+            opener = Mock(side_effect=failure)
+            with patch.object(provider_admin.time, "sleep") as sleep, self.assertLogs("provider_admin", "WARNING"):
+                self.assertFalse(provider_admin.check_gemini_api_key("health-check-key-value-1234567890", opener=opener))
+            self.assertEqual(opener.call_count, 1)
+            sleep.assert_not_called()
 
     def test_gemini_health_check_rejects_empty_or_invalid_model_response(self):
         class Response:

@@ -62,10 +62,13 @@ class HostedOAuthGateTests(unittest.TestCase):
             self.assertIn("PÁGINAS", self.run_gate(dashboard, message)["reply"])
             dashboard.social_oauth_select.assert_not_called()
 
-    def test_authorized_choice_persists_before_interview(self):
+    def test_authorized_choice_persists_and_returns_fixed_reply_without_model(self):
         dashboard = self.dashboard("authorized_pending_persistence")
         dashboard.social_oauth_select.return_value = {"selected": True, "verified_persisted": True}
-        self.assertIsNone(self.run_gate(dashboard, "1, 2"))
+        result = self.run_gate(dashboard, "1, 2")
+        self.assertTrue(result["ok"])
+        self.assertIn("guardadas y verificadas", result["reply"])
+        self.assertNotIn("separados por coma", result["reply"])
         dashboard.social_oauth_select.assert_called_once_with({})
 
     def test_failed_selection_does_not_continue_interview_or_reconnect(self):
@@ -112,6 +115,37 @@ class HostedOAuthGateTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("https://www.facebook.com/v26.0/dialog/oauth?state=one-time", result["reply"])
         self.assertIn("Antes de continuar", result["reply"])
+
+    def test_complete_hosted_selection_turn_never_enters_model(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "admira_tool_bridge.py").write_text(textwrap.dedent('''
+                class Dashboard:
+                    def social_oauth_status(self):
+                        return {"connected": True}
+                    def social_oauth_workspaces_for_text_selection(self):
+                        return {"selection_authorization": {"status": "authorized_pending_persistence"}}
+                    def social_oauth_select(self, payload):
+                        assert payload == {}
+                        return {"selected": True, "verified_persisted": True}
+                def load_dashboard():
+                    return Dashboard()
+            '''), encoding="utf-8")
+            (root / "hermes_bridge.py").write_text(textwrap.dedent('''
+                def chat(*args, **kwargs):
+                    raise AssertionError("selection reply must not enter the model")
+                def _record_bridge_trusted_buyer_turn(payload):
+                    return payload
+            '''), encoding="utf-8")
+            (root / "product_config.py").write_text("def load_config(): return object()\n", encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, "-c", tenant_turn.INNER_SCRIPT.replace(
+                    'sys.path.insert(0, "/app/src")', "sys.path.insert(0, " + repr(str(root)) + ")")],
+                cwd=root, input=json.dumps({"message": "15, 4", "chat_id": "123", "language": "es"}),
+                text=True, capture_output=True, timeout=10,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("guardadas y verificadas", json.loads(completed.stdout)["reply"])
 
 
 if __name__ == "__main__":

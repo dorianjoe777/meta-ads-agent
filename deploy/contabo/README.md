@@ -155,8 +155,10 @@ Hosted Facebook onboarding is enforced by `tenant_turn.py` before the model
 is called: the first turn returns the secure link; after OAuth connects, the
 next buyer reply receives all publishable Pages followed by all ad accounts.
 The buyer sends `Page number, ad-account number`. The trusted-turn authorizer
-resolves that pair and the dashboard persists and verifies it before the
-existing strategic interview resumes. Invalid replies repeat the lists;
+resolves that pair and the dashboard persists and verifies it. A fixed reply
+confirms the saved selection and asks which product/service to work on first;
+the numeric selection turn never enters the model. The next buyer message
+continues the strategic interview. Invalid replies repeat the lists;
 already selected workspaces proceed without another selection prompt.
 Long inventories use the existing PostgreSQL outbox text chunking. Deploy
 the matching dashboard image and host `tenant_turn.py` together; the latter

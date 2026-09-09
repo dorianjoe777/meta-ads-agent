@@ -30,6 +30,7 @@
     claim: null,
     claimKind: "claim",
     trialActionKey: "",
+    trialCreationIssue: null,
     accountBusy: new Set(),
     device: null,
     confirmResolve: null,
@@ -259,6 +260,7 @@
   function endSession(message = "") {
     state.sessionVersion += 1;
     state.authenticated = false;
+    state.trialCreationIssue = null;
     state.csrf = "";
     state.gemini = null;
     state.codex = null;
@@ -890,7 +892,7 @@
         if (!state.authenticated || sessionVersion !== state.sessionVersion) return false;
         state.trials = Array.isArray(trialData?.trials || trialData?.items || trialData) ? (trialData.trials || trialData.items || trialData) : [];
         state.licensed = Array.isArray(licensedData?.licensed || licensedData?.items || licensedData) ? (licensedData.licensed || licensedData.items || licensedData) : [];
-        state.trialsError = false; state.licensedError = false; renderCustomers();
+        state.trialsError = false; state.licensedError = false; renderCustomers(); reconcileTrialCreation();
         if (announce) setNotice("Cuentas de prueba y licenciadas actualizadas.", "success"); return true;
       } catch (error) {
         if (!state.authenticated || sessionVersion !== state.sessionVersion) return false;
@@ -909,16 +911,34 @@
     $("#trials-panel").hidden = !trial; $("#licensed-panel").hidden = trial;
   }
 
+  function reconcileTrialCreation() {
+    const issue = state.trialCreationIssue;
+    if (!issue || state.trialsError) return;
+    const trial = (state.trials || []).find((item) => item.runtime_key === issue.runtimeKey);
+    if (!trial) return;
+    if (trial.gemini_pool_ready === true && trial.lifecycle_state === "trial") {
+      $("#trial-error").textContent = "";
+      state.trialCreationIssue = null;
+      setNotice("La cuenta " + issue.runtimeKey + " ya está creada y tiene Gemini asignado. Usa Enlace para conectarla en Telegram.", "success");
+    } else {
+      $("#trial-error").textContent = "La cuenta " + issue.runtimeKey + " ya se creó, pero su activación quedó pendiente. "
+        + messageFor(issue.error, "No se pudo completar la activación.")
+        + " Pulsa Enlace en esa misma cuenta para reintentar.";
+    }
+  }
+
   async function createTrial(event) {
     event.preventDefault(); const form = event.currentTarget; const error = $("#trial-error");
     if (form.getAttribute("aria-busy") === "true" || !validateForm(form, error)) return;
     const runtimeKey = $("#trial-runtime-key").value.trim(); const displayName = $("#trial-display-name").value.trim();
     if (!/^[a-z0-9][a-z0-9-]{2,62}$/.test(runtimeKey)) { invalidField($("#trial-runtime-key"), error, messageFor({ code: "invalid_tenant_key" })); return; }
     if (displayName.length < 1) { invalidField($("#trial-display-name"), error, messageFor({ code: "invalid_display_name" })); return; }
+    state.trialCreationIssue = null;
+    error.textContent = "";
     setFormBusy(form, true); setBusy($("#trial-submit"), true, "Creando…");
     try { const data = await request("/api/operator/trials", { method: "POST", body: JSON.stringify({ runtime_key: runtimeKey, display_name: displayName }) });
       form.reset(); await Promise.all([refreshCustomers(), refreshGemini()]); setNotice("Cuenta de prueba creada. " + (data?.claim_url ? "Se generó un enlace temporal." : "Usa Enlace para activarla en Telegram."), "success"); if (data?.claim_url) showClaim(data.claim_url); }
-    catch (e) { error.textContent = messageFor(e, "No se pudo crear la cuenta de prueba."); await Promise.all([refreshCustomers(), refreshGemini()]); }
+    catch (e) { state.trialCreationIssue = { runtimeKey, error: e }; error.textContent = messageFor(e, "No se pudo crear la cuenta de prueba."); await Promise.all([refreshCustomers(), refreshGemini()]); }
     finally { setFormBusy(form, false); setBusy($("#trial-submit"), false); }
   }
 
