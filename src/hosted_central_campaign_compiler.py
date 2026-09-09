@@ -36,6 +36,7 @@ MAX_PROVIDER_TIMEOUT_SECONDS = 230
 TIMEOUT_RESPONSE_RESERVE_SECONDS = 5
 MODEL = "gpt-5.6-terra"
 TOOLS = {
+    "admira_prepare_strategic_plan",
     "admira_create_whatsapp_campaign",
     "admira_create_lead_form_campaign",
     "admira_create_website_campaign",
@@ -106,6 +107,16 @@ def _read_response(sock: socket.socket) -> Mapping[str, Any] | None:
         return None
     value = json.loads(raw.split(b"\n", 1)[0])
     return value if isinstance(value, dict) else None
+
+
+def central_campaign_compiler_configured() -> bool:
+    """Detect a hosted route without reading any OAuth credential."""
+    access = _json_file(Path(os.environ.get(
+        "ADMIRA_HOSTED_IMAGE_ACCESS_FILE", "/app/runtime/hosted_image_access.json",
+    )))
+    return bool(access) and str(access.get("route") or "") not in {
+        "", "disabled", "legacy", "personal_chatgpt",
+    }
 
 
 def maybe_compile_central_campaign(
@@ -205,4 +216,4 @@ def maybe_compile_central_campaign(
         return _error("provider_failed")
 
 
-__all__ = ["MODEL", "maybe_compile_central_campaign"]
+__all__ = ["MODEL", "central_campaign_compiler_configured", "maybe_compile_central_campaign"]

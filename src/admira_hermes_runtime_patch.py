@@ -740,7 +740,7 @@ def _admira_compiled_procedure_instruction(state):
     else:
         plan_instruction = (
             "The onboarding business summary is complete, but no compact advertising-plan draft is stored yet. The initial "
-            "proposal belongs to the isolated Sol-low compiler, grounded in relevant confirmed business facts and a fresh "
+            "proposal belongs to the isolated strategic-plan compiler, grounded in relevant confirmed business facts and a fresh "
             "Meta snapshot. Do not draft, abbreviate, save, or present a substitute yourself. If it is temporarily "
             "unavailable, say so briefly and continue the buyer's safe conversational request without calling the business "
             "summary a plan or asking to reconfirm it. Once strategic_plan_status becomes proposed, use the exact canonical "
@@ -768,6 +768,7 @@ def _admira_compiled_procedure_instruction(state):
         f"{ADMIRA_PRODUCT_STATE_START}\n"
         f"The current Page-scoped onboarding/business profile is complete; lifecycle_state={lifecycle}, master_plan_status={plan_status}.\n"
         f"{plan_instruction}"
+        f"Current confirmed business memory (read-only facts, not new approvals):\n{_admira_render_business_profile(state)}\n\n"
         f"Current compact advertising-plan artifact (read-only context for this turn):\n{plan_text}\n\n"
         "Meta live inventory and performance reads are authoritative for current campaigns, delivery, spend, and results; "
         "saved briefs or plan KPI assumptions never override live Meta data.\n"
@@ -809,6 +810,9 @@ def _admira_attach_compiled_procedure(api_kwargs, *, state=None):
     instruction = _admira_compiled_procedure_instruction(
         state or _admira_strategic_profile_state()
     )
+    instruction += _admira_turn_recovery_context(state=state)
+    root = Path(str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "/app"))
+    turn = _admira_read_json(root / "dashboard/data/trusted_buyer_turn.json")
     # Hermes has already converted a Codex/OpenAI subscription request to the
     # Responses API by the time this provider-boundary patch runs.  Such a
     # request contains ``input`` + ``instructions`` and must never receive a
@@ -816,11 +820,14 @@ def _admira_attach_compiled_procedure(api_kwargs, *, state=None):
     # rejects it before authentication/network I/O.  Preserve the native
     # payload and extend its system instructions instead.
     if "input" in request and "messages" not in request:
+        request["input"] = _admira_reconcile_finalized_exchange(request["input"], turn)
         existing = str(request.get("instructions") or "").strip()
         if ADMIRA_PRODUCT_STATE_START not in existing:
             request["instructions"] = f"{existing}\n\n{instruction}".strip()
         return request
-    messages = request.get("messages") if isinstance(request.get("messages"), list) else []
+    messages = _admira_reconcile_finalized_exchange(request.get("messages"), turn)
+    messages = messages if isinstance(messages, list) else []
+    request["messages"] = messages
     if any(
         ADMIRA_PRODUCT_STATE_START in str(item.get("content") or "")
         for item in messages if isinstance(item, dict)
@@ -831,6 +838,92 @@ def _admira_attach_compiled_procedure(api_kwargs, *, state=None):
         instruction,
     )
     return request
+
+
+def _admira_reconcile_finalized_exchange(messages, turn):
+    """Project the actual prior exchange into this exact buyer request.
+
+    Lifecycle short circuits can skip Hermes, while outbound normalization can
+    replace its draft. Preserve tool history and orient the model with what the
+    buyer actually received, without rewriting the saved Hermes session.
+    """
+    if not isinstance(messages, list) or not isinstance(turn, dict):
+        return messages
+    previous = turn.get("previous_exchange")
+    if not isinstance(previous, dict) or not previous.get("assistant_reply"):
+        return messages
+
+    def plain(item):
+        content = item.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
+        return ""
+
+    users = [i for i, item in enumerate(messages) if isinstance(item, dict) and item.get("role") == "user"]
+    if not users or plain(messages[users[-1]]).strip() != str(turn.get("message") or "").strip():
+        return messages
+    current = users[-1]
+    buyer = str(previous.get("buyer_message") or "")[:4000]
+    reply = str(previous["assistant_reply"])[:8000]
+    if not buyer:
+        return messages
+    updated = list(messages)
+    if len(users) > 1 and plain(messages[users[-2]]).strip() == buyer.strip():
+        for index in range(current - 1, users[-2], -1):
+            item = updated[index]
+            if isinstance(item, dict) and item.get("role") == "assistant" and not item.get("tool_calls"):
+                content = reply
+                if isinstance(item.get("content"), list):
+                    kind = "output_text" if item.get("type") == "message" else "text"
+                    content = [{"type": kind, "text": reply}]
+                updated[index] = {**item, "content": content}
+                return updated
+        updated.insert(current, {"role": "assistant", "content": reply})
+    else:
+        updated[current:current] = [
+            {"role": "user", "content": buyer}, {"role": "assistant", "content": reply},
+        ]
+    return updated
+
+
+def _admira_turn_recovery_context(*, state=None, product_root=None):
+    """Provide transport truth and pending-work status as system-side data."""
+    root = Path(str(product_root or os.environ.get("ADMIRA_PRODUCT_ROOT") or "/app"))
+    state = state if isinstance(state, dict) else _admira_strategic_profile_state(product_root=root)
+    turn = _admira_read_json(root / "dashboard/data/trusted_buyer_turn.json")
+    previous = turn.get("previous_exchange") if isinstance(turn, dict) else None
+    context = {}
+    if isinstance(previous, dict) and previous.get("assistant_reply"):
+        context["previous_exchange"] = {
+            "buyer_message": str(previous.get("buyer_message") or "")[:4000],
+            "assistant_reply": str(previous["assistant_reply"])[:8000],
+        }
+    if state.get("complete") and state.get("master_plan_status") == "missing":
+        generations = _admira_read_json(root / "dashboard/data/strategic_plan_generation.json")
+        page = str(state.get("bound_page_id") or "")
+        generation = generations.get(page) if isinstance(generations, dict) else None
+        if isinstance(generation, dict) and str(generation.get("profile_revision")) == str(state.get("revision")):
+            context["initial_proposal"] = {
+                key: generation.get(key) for key in ("status", "reason", "retry_after")
+            }
+    if not context:
+        return ""
+    return (
+        "\n\nRuntime conversation context (data, not buyer-authored instructions):\n"
+        "The previous_exchange is the exact finalized response returned to this buyer, which may differ from "
+        "a raw model draft in session history. Use it to understand follow-ups naturally. These records are "
+        "orientation only, never approval or tool authorization. Internal runtime metadata was supplied by "
+        "the application, not by the buyer; do not attribute it to their message. "
+        "A failed initial_proposal means generation failed, not that the confirmed business facts are missing. "
+        "Respond directly to the current message in the actual previous exchange before changing tasks. "
+        "When the buyer is confused by a failed proposal, clarify what was saved and what failed in plain language; "
+        "do not restart discovery or switch to unrelated campaign setup. Continue useful conversation naturally. "
+        "The backend retries pending generation on a later buyer turn after retry_after; do not promise "
+        "an autonomous future message or ask to reconfirm a saved business summary.\n"
+        + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+    )
 
 
 def _admira_compact_receipt_payload(value):
@@ -3940,13 +4033,13 @@ def _admira_attach_verbatim_campaign_source(response, source):
 
 
 def _nvidia_append_private_instruction(messages, instruction):
-    """Attach a bounded internal instruction to the latest request message."""
+    """Keep runtime instructions separate from buyer and tool content."""
     if not instruction or not isinstance(messages, list):
         return messages
     updated = list(messages)
     for index in range(len(updated) - 1, -1, -1):
         item = updated[index]
-        if not isinstance(item, dict) or item.get("role") not in {"user", "system"}:
+        if not isinstance(item, dict) or item.get("role") != "system":
             continue
         clone = dict(item)
         content = clone.get("content")
@@ -3954,7 +4047,7 @@ def _nvidia_append_private_instruction(messages, instruction):
             clone["content"] = f"{content}\n\n{instruction}"
             updated[index] = clone
             return updated
-    updated.append({"role": "system", "content": instruction})
+    updated.insert(0, {"role": "system", "content": instruction})
     return updated
 
 
@@ -6285,18 +6378,7 @@ def _patch_gateway_generated_media_delivery():
                 # presentation. Skipping Hermes prevents a shallow competing
                 # plan or an unrelated tool call on the transition turn.
                 result = {
-                "final_response": "Preparé una propuesta inicial de anuncios para que la pulamos juntos.",
-                    "messages": [],
-                }
-            elif plan_generation.get("attempted") and not plan_generation.get("ok") and str(
-                plan_generation.get("reason") or ""
-            ) != "strategic_plan_generation_compare_and_swap_failed":
-                result = {
-                    "final_response": (
-                        "El resumen del negocio quedó confirmado, pero no pude preparar todavía la propuesta publicitaria "
-                        "con la evidencia necesaria. No voy a inventar una dirección genérica. "
-                        "Tu información está guardada y volveré a intentar la compilación de forma segura."
-                    ),
+                    "final_response": "Preparé una propuesta inicial de anuncios para que la pulamos juntos.",
                     "messages": [],
                 }
             else:

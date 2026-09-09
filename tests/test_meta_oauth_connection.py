@@ -21,6 +21,31 @@ def load_dashboard():
 
 
 class MetaOAuthConnectionTests(unittest.TestCase):
+    def test_finalized_reply_survives_next_turn_without_becoming_authorization(self):
+        base = {"chat_id": "simulated_telegram:123", "session_id": "s1", "transport": "simulated_telegram"}
+        self.dashboard.record_trusted_buyer_turn(**base, message_sequence=1, raw_message="confirmo el resumen")
+        expected = {**base, "message_sequence": 1, "raw_message": "confirmo el resumen"}
+        result = self.dashboard.record_finalized_buyer_reply(
+            expected_turn=expected, assistant_text="El resumen se guardó; la propuesta falló temporalmente.")
+        self.assertTrue(result["recorded"])
+        self.dashboard.record_trusted_buyer_turn(**base, message_sequence=2, raw_message="que")
+        turn = self.dashboard._trusted_buyer_turn()
+        self.assertEqual(turn["message"], "que")
+        self.assertEqual(turn["previous_exchange"]["buyer_message"], "confirmo el resumen")
+        self.assertIn("falló temporalmente", turn["previous_exchange"]["assistant_reply"])
+        self.assertNotIn("meta_selection_ticket", turn)
+        stale = self.dashboard.record_finalized_buyer_reply(expected_turn=expected, assistant_text="stale")
+        self.assertFalse(stale["recorded"])
+        self.assertNotIn("finalized_reply", self.dashboard._trusted_buyer_turn())
+
+    def test_reply_context_does_not_cross_sessions(self):
+        base = {"chat_id": "simulated_telegram:123", "session_id": "s1", "transport": "simulated_telegram"}
+        self.dashboard.record_trusted_buyer_turn(**base, message_sequence=1, raw_message="hola")
+        self.dashboard.record_finalized_buyer_reply(
+            expected_turn={**base, "message_sequence": 1, "raw_message": "hola"}, assistant_text="private old conversation")
+        self.dashboard.record_trusted_buyer_turn(**{**base, "session_id": "s2"}, message_sequence=2, raw_message="hola")
+        self.assertNotIn("previous_exchange", self.dashboard._trusted_buyer_turn())
+
     def test_hosted_gate_lists_full_inventory_then_consumes_real_numeric_ticket(self):
         import hermes_bridge
         spec = importlib.util.spec_from_file_location("gate_integration", ROOT / "deploy/contabo/tenant_turn.py")

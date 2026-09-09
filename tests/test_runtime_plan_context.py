@@ -66,7 +66,7 @@ class RuntimePlanContextTests(unittest.TestCase):
 
         text = runtime._admira_compiled_procedure_instruction(state)
 
-        self.assertIn("isolated Sol-low compiler", text)
+        self.assertIn("isolated strategic-plan compiler", text)
         self.assertIn("Do not draft, abbreviate, save, or present a substitute", text)
         self.assertIn("do not reproduce the compiler's job in prose", text)
 

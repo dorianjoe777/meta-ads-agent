@@ -4634,6 +4634,21 @@ def record_trusted_buyer_turn(
                 "capabilities": _new_trusted_turn_capabilities(),
                 "created_at": now_iso(),
             }
+            # Keep the final transport reply, not the model's unverified draft,
+            # as orientation for the next buyer message. This is never evidence
+            # for authorizing a tool or confirming a business artifact.
+            if isinstance(previous, dict) and all(
+                previous.get(key) == turn.get(key)
+                for key in ("chat_id", "session_id", "transport")
+            ):
+                if previous.get("finalized_reply"):
+                    turn["previous_exchange"] = {
+                        "buyer_message": str(previous.get("message") or "")[:4000],
+                        "assistant_reply": str(previous["finalized_reply"])[:8000],
+                        "message_sequence": previous.get("message_sequence"),
+                    }
+                elif isinstance(previous.get("previous_exchange"), dict):
+                    turn["previous_exchange"] = previous["previous_exchange"]
             authorizer = _meta_oauth_selection_authorizer()
             try:
                 current_intent = authorizer.current_intent(chat_id=chat_id, session_id=session_id)
@@ -4665,6 +4680,20 @@ def record_trusted_buyer_turn(
             # capture attempt.
             _clear_trusted_buyer_turn_unlocked()
             raise
+
+
+def record_finalized_buyer_reply(*, expected_turn, assistant_text):
+    """Remember the actual bridge reply only for its exact current buyer turn."""
+    text = str(assistant_text or "").strip()
+    if not text:
+        return {"recorded": False}
+    with _trusted_buyer_turn_lock():
+        turn = _trusted_buyer_turn_unlocked()
+        if not _strategic_plan_expected_turn_matches(turn, expected_turn):
+            return {"recorded": False}
+        turn["finalized_reply"] = text[:8000]
+        write_private_json(TRUSTED_BUYER_TURN_FILE, turn)
+    return {"recorded": True}
 
 
 def _clear_meta_oauth_selection_authorization(*, clear_trusted_turn=True):

@@ -171,10 +171,12 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         instruction = next(
             item["content"]
             for item in routed["messages"]
-            if item.get("role") == "user"
+            if item.get("role") == "system"
         )
         self.assertIn("No se creó nada en Meta", instruction)
         self.assertIn("Do not call any tool", instruction)
+        self.assertEqual([item for item in routed["messages"] if item.get("role") == "user"],
+                         [item for item in messages if item.get("role") == "user"])
 
     def test_terminal_campaign_block_ends_gemini_tool_loop_without_phrase_routing(self):
         reply = (
@@ -225,10 +227,12 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         private_request = next(
             item["content"]
             for item in routed["messages"]
-            if item.get("role") == "user"
+            if item.get("role") == "system"
         )
         self.assertIn(reply, private_request)
         self.assertIn("Do not call any tool", private_request)
+        self.assertEqual([item for item in routed["messages"] if item.get("role") == "user"],
+                         [item for item in request["messages"] if item.get("role") == "user"])
 
     def test_freeform_agent_mode_does_not_rewrite_model_prose(self):
         previous = admira_hermes_runtime_patch.os.environ.get("ADMIRA_FREEFORM_AGENT_MODE")

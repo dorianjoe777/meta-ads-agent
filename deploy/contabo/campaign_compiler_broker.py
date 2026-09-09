@@ -29,6 +29,7 @@ REQUEST_RE = re.compile(r"^[A-Za-z0-9_-]{8,96}$")
 NONCE_RE = re.compile(r"^[a-f0-9]{32,128}$")
 
 ALLOWED_TOOLS = frozenset({
+    "admira_prepare_strategic_plan",
     "admira_create_whatsapp_campaign", "admira_create_lead_form_campaign",
     "admira_create_website_campaign", "admira_create_messaging_campaign",
     "admira_create_app_campaign", "admira_create_on_meta_campaign",

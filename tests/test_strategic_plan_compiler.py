@@ -24,11 +24,16 @@ def complete_plan(marker="detalle"):
 
 
 class StrategicPlanCompilerTests(unittest.TestCase):
-    def config(self):
+    def setUp(self):
+        hosted = mock.patch.object(compiler, "central_campaign_compiler_configured", return_value=False)
+        hosted.start()
+        self.addCleanup(hosted.stop)
+
+    def config(self, *, gemini=True):
         return SimpleNamespace(
             codex_cli="codex",
             hermes_home="/tmp/hermes",
-            gemini_api_key="gem-secret-key",
+            gemini_api_key="gem-secret-key" if gemini else "",
             agent_chat_api="",
             agent_chat_base_url="",
             agent_chat_api_key="",
@@ -49,7 +54,7 @@ class StrategicPlanCompilerTests(unittest.TestCase):
             result = compiler.compile_strategic_plan(
                 {"business": "Rodeo", "margin": "75%"},
                 {"campaigns": [{"status": "PAUSED"}]},
-                config=self.config(),
+                config=self.config(gemini=False),
             )
 
         self.assertTrue(result["ok"])
@@ -76,7 +81,7 @@ class StrategicPlanCompilerTests(unittest.TestCase):
 
         with mock.patch.object(compiler, "_codex_auth_available", return_value=True), \
              mock.patch.object(compiler, "_terra_compile", side_effect=codex):
-            result = compiler.compile_strategic_plan({}, {}, config=self.config())
+            result = compiler.compile_strategic_plan({}, {}, config=self.config(gemini=False))
 
         self.assertTrue(result["ok"])
         self.assertEqual(calls, [compiler.SOL_MODEL, compiler.TERRA_MODEL])
@@ -96,7 +101,7 @@ class StrategicPlanCompilerTests(unittest.TestCase):
 
         with mock.patch.object(compiler, "_codex_auth_available", return_value=True), \
              mock.patch.object(compiler, "_terra_compile", side_effect=codex):
-            result = compiler.compile_strategic_plan({}, {}, config=self.config())
+            result = compiler.compile_strategic_plan({}, {}, config=self.config(gemini=False))
 
         self.assertTrue(result["ok"])
         self.assertEqual(calls, [compiler.SOL_MODEL, compiler.TERRA_MODEL])
@@ -129,7 +134,7 @@ class StrategicPlanCompilerTests(unittest.TestCase):
         self.assertEqual(set(seen["schema"]["properties"]), set(compiler.PLAN_FIELDS))
         codex.assert_not_called()
 
-    def test_failed_codex_models_fall_back_to_gemini(self):
+    def test_gemini_precedes_personal_codex_even_when_connected(self):
         with mock.patch.object(compiler, "_codex_auth_available", return_value=True), \
              mock.patch.object(
                  compiler,
@@ -144,9 +149,64 @@ class StrategicPlanCompilerTests(unittest.TestCase):
             result = compiler.compile_strategic_plan({}, {}, config=self.config())
 
         self.assertTrue(result["ok"])
-        self.assertEqual(codex.call_count, 2)
+        codex.assert_not_called()
         gemini.assert_called_once()
         self.assertEqual(result["model"], compiler.GEMINI_MODEL)
+
+    def test_overloaded_planner_retries_once_then_uses_full_flash_not_chat_lite(self):
+        config = self.config()
+        config.agent_chat_model = "gemini-3.5-flash-lite"
+        def gemini(model, *_args, **_kwargs):
+            if model == compiler.GEMINI_MODEL:
+                return {"ok": False, "status": 503, "diagnostic": "private-provider-detail"}
+            return {"ok": True, "compiled": complete_plan()}
+        with mock.patch.object(compiler, "_codex_auth_available", return_value=False), \
+             mock.patch.object(compiler, "_gemini_compile", side_effect=gemini) as call, \
+             mock.patch.object(compiler.time, "sleep"):
+            result = compiler.compile_strategic_plan({}, {}, config=config)
+        self.assertTrue(result["ok"])
+        self.assertEqual([c.args[0] for c in call.call_args_list],
+                         [compiler.GEMINI_MODEL, compiler.GEMINI_MODEL, "gemini-3.6-flash"])
+        self.assertEqual(result["attempts"][0]["reason"], "strategic_plan_provider_http_503")
+        self.assertNotIn("private-provider-detail", json.dumps(result))
+
+    def test_all_full_flash_models_precede_hosted_chatgpt_pool(self):
+        calls = []
+        def gemini(model, *_args, **_kwargs):
+            calls.append(model)
+            return {"ok": False, "status": 404}
+        def central(tool, _prompt, **_kwargs):
+            calls.append(tool)
+            return {"ok": True, "compiled": complete_plan(), "model": compiler.TERRA_MODEL}
+        with mock.patch.object(compiler, "central_campaign_compiler_configured", return_value=True), \
+             mock.patch.object(compiler, "_gemini_compile", side_effect=gemini), \
+             mock.patch.object(compiler, "maybe_compile_central_campaign", side_effect=central), \
+             mock.patch.object(compiler, "_terra_compile") as personal:
+            result = compiler.compile_strategic_plan({}, {}, config=self.config())
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, [*compiler.GEMINI_MODELS, "admira_prepare_strategic_plan"])
+        self.assertEqual(result["provider"], "hosted-central-codex")
+        self.assertEqual(result["model"], compiler.TERRA_MODEL)
+        personal.assert_not_called()
+
+    def test_hosted_failure_cannot_use_unrelated_personal_credential(self):
+        with mock.patch.object(compiler, "central_campaign_compiler_configured", return_value=True), \
+             mock.patch.object(compiler, "_codex_auth_available", return_value=True), \
+             mock.patch.object(compiler, "maybe_compile_central_campaign", return_value={"ok": False, "reason": "entitlement_blocked"}), \
+             mock.patch.object(compiler, "_terra_compile") as personal:
+            result = compiler.compile_strategic_plan({}, {}, config=self.config(gemini=False))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "entitlement_blocked")
+        personal.assert_not_called()
+
+    def test_rejected_key_is_not_retried(self):
+        with mock.patch.object(compiler, "_codex_auth_available", return_value=False), \
+             mock.patch.object(compiler, "_gemini_compile", return_value={"ok": False, "status": 403}) as call, \
+             mock.patch.object(compiler.time, "sleep") as sleep:
+            result = compiler.compile_strategic_plan({}, {}, config=self.config())
+        self.assertFalse(result["ok"])
+        call.assert_called_once()
+        sleep.assert_not_called()
 
     def test_rejects_shallow_plan_and_unsupported_schema(self):
         shallow = {field: "texto breve" for field in compiler.PLAN_FIELDS}

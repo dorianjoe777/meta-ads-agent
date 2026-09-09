@@ -3103,14 +3103,12 @@ def _resolve_bridge_business_lifecycle(payload):
             target="",
         )
         transition = transition if isinstance(transition, dict) else {}
-        # Planning is backend-owned.  Only compile it on the exact turn that
-        # just confirmed the profile; unrelated greetings and logo work must
-        # stay natural model decisions.
-        if transition.get("transitioned") and transition.get("target") == "business_profile":
-            plan_generation = _ensure_initial_business_master_plan(expected_turn=expected_turn)
-            plan_generation = plan_generation if isinstance(plan_generation, dict) else {}
-        else:
-            plan_generation = {}
+        # Like the native gateway, resume an unfinished initial compilation
+        # from durable state. The helper enforces readiness, backoff, leases
+        # and exact-turn CAS; recovery must not depend on buyer vocabulary or
+        # require confirming an already-confirmed business profile again.
+        plan_generation = _ensure_initial_business_master_plan(expected_turn=expected_turn)
+        plan_generation = plan_generation if isinstance(plan_generation, dict) else {}
         return {"transition": transition, "plan_generation": plan_generation}
     except Exception:
         # Lifecycle persistence is fail-closed in the backend.  A rolling
@@ -3959,18 +3957,6 @@ def chat(config, payload):
             # lifecycle hook replaces this short placeholder with the exact
             # canonical proposal and records that the buyer saw it.
             reply = "Preparé una propuesta inicial de anuncios para que la pulamos juntos."
-        elif (
-            isinstance(plan_generation, dict)
-            and plan_generation.get("attempted")
-            and not plan_generation.get("ok")
-            and str(plan_generation.get("reason") or "")
-            != "strategic_plan_generation_compare_and_swap_failed"
-        ):
-            reply = (
-                "El resumen del negocio quedó confirmado, pero no pude preparar todavía la propuesta publicitaria "
-                "con la evidencia necesaria. No voy a inventar una dirección genérica. "
-                "Tu información está guardada y volveré a intentarlo de forma segura."
-            )
         else:
             images = safe_image_paths(payload)
             if images:
@@ -4029,6 +4015,15 @@ def chat(config, payload):
                 "reply": "",
                 "error": "Hermes returned an empty reply",
             }
+        try:
+            from admira_hermes_runtime_patch import _admira_dashboard_module
+            _admira_dashboard_module().record_finalized_buyer_reply(
+                expected_turn=_bridge_lifecycle_expected_turn(payload),
+                assistant_text=reply,
+            )
+        except Exception:
+            # An orientation receipt cannot suppress the user's response.
+            pass
         return {"ok": True, "provider": "hermes", "brain_provider": brain.get("brain"), "model": brain.get("model") or "configured-in-hermes", "reply": reply}
     except (ImportError, ModuleNotFoundError) as exc:
         return {"ok": False, "provider": "hermes", "fallback": True, "reply": setup_reply(language), "error": f"Hermes Python library is not installed: {exc}"}

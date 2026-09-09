@@ -402,6 +402,9 @@ def central_codex_conversation_provider(
 
 def central_campaign_compiler_schema(tool: str) -> Mapping[str, Any]:
     """Select the output schema on the central side, not from a tenant."""
+    if tool == "admira_prepare_strategic_plan":
+        from strategic_plan_compiler import strategic_plan_schema
+        return strategic_plan_schema()
     from campaign_payload_compiler import compiler_output_schema
     schema = compiler_output_schema(tool)
     if not isinstance(schema, Mapping):

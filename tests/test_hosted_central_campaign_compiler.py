@@ -63,6 +63,12 @@ class CentralCampaignCompilerTests(unittest.TestCase):
                 self.assertEqual(result, {"ok": False, "reason": reason, "model": MODEL})
 
     def test_signed_round_trip_validates_request_and_accepts_compiled_result(self):
+        self._signed_round_trip("create_whatsapp_campaign")
+
+    def test_strategic_proposal_uses_the_same_authenticated_pool_protocol(self):
+        self._signed_round_trip("admira_prepare_strategic_plan")
+
+    def _signed_round_trip(self, selected_tool):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             access = self._access(root)
@@ -95,7 +101,7 @@ class CentralCampaignCompilerTests(unittest.TestCase):
                             body = envelope["body"]
                             self.assertEqual(body["tenant_id"], "tenant-001")
                             self.assertEqual(body["purpose"], "campaign_compile")
-                            self.assertEqual(body["tool"], "create_whatsapp_campaign")
+                            self.assertEqual(body["tool"], selected_tool)
                             self.assertEqual(body["prompt"], "Build a campaign")
                             self.assertEqual(body["update_id"], "42")
                             self.assertEqual(body["timeout_seconds"], 1)
@@ -115,7 +121,7 @@ class CentralCampaignCompilerTests(unittest.TestCase):
             env = self._env(root, access, key, sock_path)
             with patch.dict(os.environ, env):
                 result = maybe_compile_central_campaign(
-                    "create_whatsapp_campaign", "Build a campaign", now=1, timeout=1
+                    selected_tool, "Build a campaign", now=1, timeout=1
                 )
             thread.join(timeout=2)
             self.assertFalse(thread.is_alive())

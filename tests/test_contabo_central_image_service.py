@@ -15,7 +15,7 @@ from unittest import mock
 from deploy.contabo.central_image_service import (
     CentralCampaignCompilerServer, CentralConversationServer, CentralImageServer, EntitlementStore,
     PostgresCentralCampaignCompilerEntitlement, PostgresCentralImageLedger,
-    _private_password, central_campaign_compiler_provider,
+    _private_password, central_campaign_compiler_provider, central_campaign_compiler_schema,
     central_codex_account_pool_from_env, central_codex_campaign_compiler_provider,
     central_codex_provider, postgres_connect_factory_from_env,
 )
@@ -250,6 +250,27 @@ class CentralImageServiceTests(unittest.TestCase):
         self.assertIn("CampaignCompilerBroker(", source)
         self.assertIn("CentralCampaignCompilerServer(", source)
         self.assertNotIn("CentralImageServer(broker, Path(args.socket), ledger=", source)
+
+    def test_strategic_proposal_uses_a_server_owned_schema_and_existing_pool(self):
+        from strategic_plan_compiler import strategic_plan_schema
+        pool = mock.Mock()
+        draft = {key: "example" for key in strategic_plan_schema()["required"]}
+        pool.compile.return_value = {"ok": True, "compiled": draft}
+        broker = CampaignCompilerBroker(
+            {"tenant-one": self.key}, central_campaign_compiler_schema,
+            lambda tenant, purpose: "central_sponsored",
+            lambda request, schema: central_campaign_compiler_provider(request, schema, pool=pool),
+        )
+        result = broker.submit(sign_compiler_request(self.key, {
+            "tenant_id": "tenant-one", "request_id": "strategy-001",
+            "purpose": "campaign_compile", "tool": "admira_prepare_strategic_plan",
+            "prompt": "Prepare a proposal from confirmed facts", "timeout_seconds": 90,
+        }))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["compiled"], draft)
+        pool.compile.assert_called_once_with(
+            "Prepare a proposal from confirmed facts", strategic_plan_schema(), timeout=90,
+        )
 
     def test_compiler_socket_signs_entitlement_and_returns_only_structured_output(self):
         compiler_broker = CampaignCompilerBroker(

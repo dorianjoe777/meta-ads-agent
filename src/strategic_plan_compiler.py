@@ -23,6 +23,10 @@ from campaign_payload_compiler import (
 )
 from codex_brand_guides import codex_auth_artifact_present, codex_cli_environment
 from product_config import load_config
+from hosted_central_campaign_compiler import (
+    central_campaign_compiler_configured,
+    maybe_compile_central_campaign,
+)
 
 
 PLAN_FIELDS = (
@@ -36,6 +40,7 @@ PLAN_FIELDS = (
 SOL_MODEL = "gpt-5.6-sol"
 TERRA_MODEL = "gpt-5.6-terra"
 GEMINI_MODEL = "gemini-3.7-flash"
+GEMINI_MODELS = (GEMINI_MODEL, "gemini-3.6-flash", "gemini-3.5-flash")
 
 # This is a buyer-facing advertising proposal, not a consultancy report.  The
 # complete canonical artifact must fit comfortably in one normal Telegram
@@ -206,13 +211,13 @@ def _attempt_timeout(deadline: float, providers_left: int) -> int:
     remaining = max(0.0, deadline - time.monotonic())
     if remaining <= 0:
         return 0
-    # This is an ordered quality fallback, not a round-robin workload.  Sol
-    # receives the principal window to produce the five substantive sections;
+    # This is an ordered quality fallback. The preferred model receives
+    # the principal window to produce the five substantive sections;
     # equal split cancelled healthy real requests while they were still
     # generating.  Preserve a small bounded reserve for each later provider,
     # but give the current (higher-priority) model the rest.  Fast auth/rate
     # failures therefore leave almost the full window to Terra/Gemini, while a
-    # genuinely slow Sol request still cannot consume the complete deadline.
+    # slow primary request still cannot consume the complete deadline.
     later_providers = max(0, int(providers_left) - 1)
     fallback_reserve = min(30.0, remaining / max(1, later_providers + 1))
     return max(1, int(remaining - (fallback_reserve * later_providers)))
@@ -248,10 +253,15 @@ def compile_strategic_plan(
 
     api_key = _gemini_api_key(config)
     providers: list[tuple[str, str]] = []
-    if _codex_auth_available(config):
-        providers.extend((("openai-codex", SOL_MODEL), ("openai-codex", TERRA_MODEL)))
     if api_key:
-        providers.append(("google-ai-studio", GEMINI_MODEL))
+        providers.extend(("google-ai-studio", model) for model in GEMINI_MODELS)
+    # Strategic proposals use full Flash before ChatGPT. Hosted buyers use
+    # the entitled central OAuth pool; their conversation model (often Lite)
+    # is deliberately not a planner fallback.
+    if central_campaign_compiler_configured():
+        providers.append(("hosted-central-codex", TERRA_MODEL))
+    elif _codex_auth_available(config):
+        providers.extend((("openai-codex", SOL_MODEL), ("openai-codex", TERRA_MODEL)))
 
     if not providers:
         return {
@@ -264,6 +274,7 @@ def compile_strategic_plan(
         }
 
     last_reason = "strategic_plan_provider_failed"
+    retried = set()
     for index, (provider, model) in enumerate(providers):
         reasoning_effort = "low" if provider == "openai-codex" else ""
         attempt_timeout = _attempt_timeout(deadline, len(providers) - index)
@@ -272,7 +283,11 @@ def compile_strategic_plan(
             break
         started = time.monotonic()
         try:
-            if provider == "openai-codex":
+            if provider == "hosted-central-codex":
+                candidate = maybe_compile_central_campaign(
+                    "admira_prepare_strategic_plan", prompt, timeout=attempt_timeout,
+                )
+            elif provider == "openai-codex":
                 candidate = _terra_compile(
                     prompt,
                     schema,
@@ -312,6 +327,9 @@ def compile_strategic_plan(
             last_reason = _safe_reason(
                 candidate.get("reason") if isinstance(candidate, dict) else "",
             )
+            status = candidate.get("status") if isinstance(candidate, dict) else None
+            if isinstance(status, int) and 400 <= status <= 599:
+                last_reason = "strategic_plan_provider_http_" + str(status)
             attempts.append({
                 "model": model,
                 "provider": provider,
@@ -320,6 +338,19 @@ def compile_strategic_plan(
                 "reason": last_reason,
                 "elapsed_ms": elapsed_ms,
             })
+            if provider == "google-ai-studio" and status in {401, 403}:
+                # Changing models cannot recover a rejected shared API key.
+                providers[index + 1:] = [item for item in providers[index + 1:]
+                                         if item[0] != "google-ai-studio"]
+            if (
+                provider == "google-ai-studio"
+                and status in {408, 429, 500, 502, 503, 504}
+                and (provider, model) not in retried
+                and deadline - time.monotonic() > 2
+            ):
+                retried.add((provider, model))
+                time.sleep(0.5)
+                providers.insert(index + 1, (provider, model))
             continue
 
         valid, reason, plan = _validate_plan(candidate.get("compiled"))
