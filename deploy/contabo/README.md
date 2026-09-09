@@ -162,6 +162,15 @@ Long inventories use the existing PostgreSQL outbox text chunking. Deploy
 the matching dashboard image and host `tenant_turn.py` together; the latter
 is injected by the active runtime broker, not read from the tenant image.
 
+The pool provisioning service selects this release with
+`ADMIRA_TENANT_IMAGE=admira-ia-hosted:r99-canary-bb05a5ebc761` in
+`/etc/systemd/system/admira-tenant-provisioner.service.d/tenant-image.conf`.
+Its systemd environment applies the image to newly created accounts.
+The matching host gate is installed in the active broker release and the
+`/srv/admira/control-plane` release. The image's focused offline suite passed
+76 tests, including real selection tickets, option 61, invalid replies,
+verified persistence, and continued chat for already selected workspaces.
+
 The opt-in `operator-dashboard` profile serves a Spanish operator panel on
 `127.0.0.1:8791` only. Follow [OPERATOR_DASHBOARD.md](OPERATOR_DASHBOARD.md) for
 the exact private-directory, migration, first-password and access sequence.
