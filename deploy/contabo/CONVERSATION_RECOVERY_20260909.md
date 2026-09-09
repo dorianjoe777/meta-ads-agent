@@ -81,6 +81,28 @@ These checks did not send Telegram messages or write customer business data.
 - The earlier OAuth gate copies still have SHA-256
   `9e1f622bd23c42b10eeecde145a3405e69cb84f14841607b0039247a216ca269`.
 
+## Google quota verification and Flash output fix
+
+The buyer supplied a temporary AI Studio key for a direct test. It was used
+only as an in-memory process environment value and was not written to the
+repository, tenant runtime, image, logs or backup. With that key and a normal
+`maxOutputTokens` value, Gemini 3.7 Flash and 3.6 Flash returned HTTP 200 with
+visible output. Gemini 3.5 Flash returned one intermittent HTTP 503. The
+earlier empty-output observation used an artificial 8–32-token cap: Gemini 3.x
+spent that entire cap on hidden reasoning and returned no visible text. The
+provider response was therefore misread as a quota problem.
+
+`fb1fd7e329a4c3ed7e84307a325d742ea92dd2b6` adds
+`thinkingConfig.thinkingLevel=low` and `maxOutputTokens=4096` to the shared
+Gemini structured request. This reserves room for the validated JSON while
+leaving buyer-language handling untouched. The resulting image is
+`admira-ia-hosted:r99-canary-fb1fd7e329a4`, now selected by Dorian's compose and
+the new-tenant provisioner. The official Gemini guidance recommends
+`thinkingLevel` for Gemini 3 models: <https://ai.google.dev/gemini-api/docs/thinking>.
+
+The temporary key should be revoked in AI Studio after this diagnostic because
+it was pasted into a chat transcript.
+
 ## Remaining external pool limitation
 
 The real signed strategy request reached the deployed central provider, but
