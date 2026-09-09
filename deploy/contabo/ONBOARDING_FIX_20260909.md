@@ -42,9 +42,37 @@ network disabled and no customer volumes. Node tests exercise partial
 creation, later recovery, lost responses, another account's readiness, failed
 refresh and identical VPS/mobile JavaScript. JavaScript syntax passes.
 
-The tenant image itself needs no change for these fixes. Deploy the gate to
-both the active broker release and `/srv/admira/control-plane`, the provider
-module to the active provisioner, and matching operator assets to the VPS
-panel and the `admira-mobile-operator-dashboard` Vercel project. Keep recovery
-copies of replaced files and the prior operator image before restarting the
-services. Verify live hashes and a disposable trial lifecycle after rollout.
+Deployment verified:
+
+- Fix commit `9114afc34c9621b718b67fb13194a25f4a00d05b` pushed to the hosted
+  branch. The tenant default remains `r99-canary-bb05a5ebc761` because these
+  changes run at the host gate and operator boundary.
+- Gate installed in both the active broker release and
+  `/srv/admira/control-plane`; provider installed in the active provisioner.
+  Both systemd services restarted successfully after confirming zero active
+  buyer turns. No customer runtime image was replaced.
+- Operator image `admira-operator:onboarding-9114afc34c96` layers only
+  `provider_admin.py` and `operator_dashboard.js` onto the previously active
+  `r99-canary-0601767a73ab` image. Its `io.admira.patch-commit` and
+  `io.admira.patch-base` labels describe the overlay; inherited source labels
+  still describe the base image. The `.env` operator-image selector was updated.
+- Recovery copies are in `/srv/admira/backups/onboarding-9114afc34c96`, including
+  the prior host modules, JavaScript and operator `.env`. Base images remain.
+- Vercel deployment `dpl_Dsd4iWwaenfdEAyjNW2iFrWiKcLV` is ready. The custom
+  alias `dashboard.uboost.lat` was explicitly moved to
+  `admira-mobile-operator-dashboard-qdjfksctf-dorianx.vercel.app`; that alias
+  was pinned separately and did not follow a normal production deploy.
+- The VPS panel and public domain both serve JavaScript SHA-256
+  `4c05dffd5d531a1b338cb86d7374266abc993dda5c8342f21df1990601d8bd96`.
+  Both active gate copies have SHA-256
+  `9e1f622bd23c42b10eeecde145a3405e69cb84f14841607b0039247a216ca269`.
+  Provider SHA-256 is
+  `92914ce0fbd30c6370990e999c6dac4d45d2ef0d5fe34dd7e6af6a39670e27f2`.
+- A real signed request through the deployed operator/provisioner created
+  disposable trial `onboarding-smoke-aa7821c600` with Gemini ready and a claim
+  URL in 2.74 seconds. The fixture was deleted through the normal fenced
+  lifecycle; its workspace was removed and the prior customer inventory and
+  per-project occupancy were unchanged. No claim was consumed and no Telegram
+  message was sent. The existing `dorian1` Facebook selection was preserved.
+- Public session and protected trial routes still return their expected
+  unauthenticated responses through the deployed gateway.
