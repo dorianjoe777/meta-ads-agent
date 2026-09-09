@@ -298,6 +298,26 @@ class RuntimeBrokerTests(unittest.TestCase):
                     core.handle({"action": "purge", "tenant_id": "client-001"})
             self.assertTrue(target.is_file())
 
+    def test_purge_clears_root_owned_bind_mount_files_before_host_removal(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            base = root / "tenants"
+            tenant = base / "client-001"
+            (tenant / "data" / "hermes-workspace" / "current").mkdir(parents=True)
+            (tenant / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            core = broker.BrokerCore(tenants_base=base, spool_base=root / "spool")
+            completed = type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            with patch.object(core, "_requires_container_cleanup", return_value=True), \
+                 patch.object(broker, "lifecycle", return_value={"ok": True}), \
+                 patch.object(broker.subprocess, "run", return_value=completed) as run:
+                result = core.handle({"action": "purge", "tenant_id": "client-001"})
+            self.assertTrue(result["ok"])
+            command = run.call_args.args[0]
+            self.assertIn("--user", command)
+            self.assertIn("0", command)
+            self.assertIn("/app/dashboard/data", command[-1])
+            self.assertFalse(tenant.exists())
+
     def test_candidate_capacity_uses_six_normal_slots(self):
         with patch.dict(os.environ, {
             "ADMIRA_NORMAL_ACTIVE_TENANTS": "6",

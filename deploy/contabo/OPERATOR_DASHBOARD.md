@@ -277,6 +277,10 @@ intact; the deleted tenant's assignment is released. A cleanup failure returns
 a retryable error; use **Eliminar** again to finish the same deletion claim.
 There is no customer grace period for this action.
 
+The provisioner socket directory is bind-mounted into the dashboard container.
+Its systemd unit uses RuntimeDirectoryPreserve=yes so a provisioner restart
+does not leave the dashboard attached to an obsolete empty directory.
+
 The SQL validator `db/validate_operator_delete_trial.sql` rolls back its
 fixtures. End-to-end validation must use a newly created disposable account,
 never an existing customer's account.

@@ -815,6 +815,8 @@ class BrokerCore:
                 stopped = lifecycle(self.tenants_base, tenant_id, "suspend")
                 if not stopped.get("ok"):
                     return {"ok": False, "error_code": "runtime_suspend_failed"}
+                if self._requires_container_cleanup(root) and not self._clear_container_owned_files(root):
+                    return {"ok": False, "error_code": "runtime_cleanup_failed"}
                 shutil.rmtree(root)
 
             for configured, label, is_key in (
@@ -840,6 +842,45 @@ class BrokerCore:
                             shutil.rmtree(child)
         return {"ok": True, "removed": True, "tenant_id": tenant_id}
 
+    @staticmethod
+    def _requires_container_cleanup(root: Path) -> bool:
+        """Detect bind-mounted entries the unprivileged broker cannot remove."""
+        try:
+            for directory, names, files in os.walk(root, topdown=True, followlinks=False):
+                for name in (*names, *files):
+                    try:
+                        if os.lstat(Path(directory) / name).st_uid != os.geteuid():
+                            return True
+                    except OSError:
+                        return True
+        except OSError:
+            return True
+        return False
+
+    @staticmethod
+    def _clear_container_owned_files(root: Path) -> bool:
+        """Remove files created as root inside the isolated tenant container.
+
+        The hosted image can create root-owned files on bind mounts while the
+        broker itself intentionally runs unprivileged. Run the exact tenant
+        service as UID 0 with its existing compose mounts, then let the broker
+        remove the now-empty host directories. No host path or service other
+        than this tenant is passed to Docker.
+        """
+        command = compose_argv(
+            root, "run", "--rm", "--no-deps", "-T", "--pull", "never",
+            "--user", "0", "--entrypoint", "sh", "admira", "-c",
+            "find /app/runtime /app/dashboard/data /app/output /app/logs /app/brand_guides "
+
+            "-mindepth 1 -exec rm -rf -- {} +",
+        )
+        try:
+            result = subprocess.run(
+                command, text=True, capture_output=True, check=False, timeout=180,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
     def handle(self, request: object) -> dict[str, object]:
         if not isinstance(request, dict):
             raise ValueError("invalid_request")

@@ -103,6 +103,10 @@ SupplementaryGroups=docker $GROUP
 WorkingDirectory=$ROOT_DIR
 RuntimeDirectory=admira-tenant-provisioner
 RuntimeDirectoryMode=0750
+# Keep the bind-mounted socket directory inode stable across daemon restarts.
+# The operator container mounts this directory once; systemd must not remove
+# and recreate it underneath that mount.
+RuntimeDirectoryPreserve=yes
 Environment=ADMIRA_TELEGRAM_BOT_USERNAME=$BOT_USERNAME
 Environment=ADMIRA_LICENSE_API_URL=$LICENSE_URL
 Environment=ADMIRA_LICENSE_BRIDGE_KEY_FILE=$BRIDGE_TARGET
