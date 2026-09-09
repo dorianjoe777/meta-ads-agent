@@ -634,6 +634,14 @@ def _gemini_compile(model, prompt, schema, *, api_key, base_url, timeout):
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0,
+            # Gemini 3.x spends part of max_output_tokens on hidden reasoning
+            # by default. A tiny request can therefore return HTTP 200 with
+            # finishReason=MAX_TOKENS and no visible JSON. Keep a bounded low
+            # thinking level and reserve enough output for the validated
+            # structured result; this is a token-budget setting, not a
+            # language or intent filter.
+            "thinkingConfig": {"thinkingLevel": "low"},
+            "maxOutputTokens": 4096,
             "responseMimeType": "application/json",
             "responseJsonSchema": schema,
         },
