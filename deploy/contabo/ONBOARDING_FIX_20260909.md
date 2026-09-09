@@ -1,5 +1,8 @@
 # Hosted onboarding and trial creation — 2026-09-09
 
+Later same-day deployment: see `CONVERSATION_RECOVERY_20260909.md` for the new
+tenant default and proposal/context fix. The host/operator fixes below remain.
+
 Verified live default for new tenants: `admira-ia-hosted:r99-canary-bb05a5ebc761`,
 selected by the provisioner's `tenant-image.conf` systemd drop-in. `dorian1`
 uses that image. The numeric OAuth gate is injected by the host broker from
