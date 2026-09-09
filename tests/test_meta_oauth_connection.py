@@ -1,4 +1,6 @@
 import importlib.util
+import ast
+import sys
 import os
 import tempfile
 import threading
@@ -19,6 +21,48 @@ def load_dashboard():
 
 
 class MetaOAuthConnectionTests(unittest.TestCase):
+    def test_hosted_gate_lists_full_inventory_then_consumes_real_numeric_ticket(self):
+        import hermes_bridge
+        spec = importlib.util.spec_from_file_location("gate_integration", ROOT / "deploy/contabo/tenant_turn.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        function = next(n for n in ast.parse(module.INNER_SCRIPT).body
+                        if isinstance(n, ast.FunctionDef) and n.name == "hosted_meta_oauth_gate")
+        scope = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "<gate>", "exec"), scope)
+        gate = scope["hosted_meta_oauth_gate"]
+        connection = {"connected": True,
+            "accounts": [{"id": "act_"+str(i), "name": "Cuenta "+str(i)} for i in range(1, 62)],
+            "pages": [{"id": "page_"+str(i), "name": "Página "+str(i), "access_token": "p"*40}
+                      for i in range(1, 62)]}
+        self.dashboard.write_private_json(self.dashboard.META_OAUTH_CONNECTION_FILE, connection)
+        def record(**kwargs):
+            self.dashboard.record_trusted_buyer_turn(**kwargs)
+            return True
+        import admira_tool_bridge
+        import admira_hermes_runtime_patch
+        with patch.object(admira_tool_bridge, "load_dashboard", return_value=self.dashboard), \
+             patch.object(admira_hermes_runtime_patch, "_record_trusted_buyer_turn", side_effect=record), \
+             patch.object(self.dashboard, "load_config", return_value=self.config):
+            base = {"channel": "telegram", "chat_id": "123", "session_key": "agent:main:telegram:dm:123"}
+            prompt = gate({**base, "message": "listo", "update_id": 100})
+            self.assertIn("61. Página 61", prompt["reply"])
+            self.assertIn("61. Cuenta 61", prompt["reply"])
+            invalid = gate({**base, "message": "61", "update_id": 101})
+            self.assertIn("separados por coma", invalid["reply"])
+            with patch.object(self.dashboard, "synchronize_selected_ad_account_timezone",
+                              return_value={"ok": True, "changed": False}), \
+                 patch.object(self.dashboard, "update_env_values"), \
+                 patch.object(self.dashboard, "save_setup_config", return_value={"saved": True}), \
+                 patch.object(self.dashboard, "_verify_meta_oauth_workspace_persistence",
+                              side_effect=lambda *_: self.dashboard._meta_oauth_connection()), \
+                 patch.object(self.dashboard, "log_action"):
+                self.assertIsNone(gate({**base, "message": "61, 60", "update_id": 102}))
+            saved = self.dashboard._meta_oauth_connection()
+            self.assertEqual(saved["active_page_id"], "page_61")
+            self.assertEqual(saved["active_ad_account_id"], "act_60")
+            self.assertIsNone(gate({**base, "message": "continuemos", "update_id": 103}))
+
     def setUp(self):
         self.dashboard = load_dashboard()
         self.temp = tempfile.TemporaryDirectory()

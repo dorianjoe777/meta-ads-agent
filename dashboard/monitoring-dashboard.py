@@ -4310,8 +4310,8 @@ def _meta_oauth_selection_inventory(connection=None):
         "accounts": [
             item for item in (connection.get("accounts") or [])
             if isinstance(item, dict) and clean_ad_account_id(item.get("id"))
-        ][:50],
-        "pages": _oauth_publishable_pages(connection)[:50],
+        ],
+        "pages": _oauth_publishable_pages(connection),
     }
 
 

@@ -73,7 +73,7 @@ os.environ["ADMIRA_HOSTED_TELEGRAM_GATEWAY"] = "true"
 
 
 def hosted_meta_oauth_gate(payload):
-    """Deliver the first Facebook handoff deterministically before an LLM turn."""
+    """Require Facebook connection and explicit workspace choice before chat."""
     language = str(payload.get("language") or "es").lower()
     english = language.startswith("en")
     try:
@@ -81,7 +81,42 @@ def hosted_meta_oauth_gate(payload):
         dashboard = load_dashboard()
         status = dashboard.social_oauth_status()
         if status.get("connected"):
-            return None
+            if status.get("active_page_id") and status.get("active_ad_account_id"):
+                return None
+            # Use the same transport identity and sequence as the subsequent
+            # Hermes turn. The dashboard alone authorizes numeric selections.
+            from hermes_bridge import _record_bridge_trusted_buyer_turn
+            payload.update(_record_bridge_trusted_buyer_turn(payload))
+            status = dashboard.social_oauth_workspaces_for_text_selection()
+            authorization = status.get("selection_authorization") or {}
+            if authorization.get("status") == "authorized_pending_persistence":
+                selected = dashboard.social_oauth_select({})
+                if selected.get("selected") is True and selected.get("verified_persisted") is True:
+                    # Live context now contains the chosen business; continue
+                    # the existing interview in this same turn.
+                    return None
+                raise ValueError("workspace_selection_not_persisted")
+            from meta_selection_authorization import sanitize_inventory
+            inventory = sanitize_inventory(dashboard._meta_oauth_selection_inventory())
+            pages, accounts = inventory["pages"], inventory["accounts"]
+            if not pages or not accounts:
+                return {"ok": True, "reply": (
+                    "Facebook is connected, but I still need access to both a publishable Page and an ad account. Check the business permissions and reply here to try again."
+                    if english else
+                    "Facebook está conectado, pero todavía falta acceso a una Página publicable o a una cuenta publicitaria. Revisa los permisos de los activos del negocio y vuelve a responder aquí para comprobarlos."
+                )}
+            page_lines = [str(item["ordinal"]) + ". " + " ".join(item["name"].split()) for item in pages]
+            account_lines = [str(item["ordinal"]) + ". " + " ".join(item["name"].split()) for item in accounts]
+            reply = (
+                ("Facebook is connected. Choose the assets for this business:\n\nFACEBOOK PAGES:\n"
+                 if english else "Facebook quedó conectado. Elige los activos de este negocio:\n\nPÁGINAS DE FACEBOOK:\n")
+                + "\n".join(page_lines)
+                + ("\n\nAD ACCOUNTS:\n" if english else "\n\nCUENTAS PUBLICITARIAS:\n")
+                + "\n".join(account_lines)
+                + ("\n\nReply with only two numbers separated by a comma: Page first, ad account second. Example: 1, 1."
+                   if english else "\n\nEnvía solo dos números separados por coma: primero la Página y después la cuenta publicitaria. Ejemplo: 1, 1.")
+            )
+            return {"ok": True, "reply": reply}
         handoff = dashboard.social_oauth_start({
             "telegram_chat_id": str(payload.get("chat_id") or ""),
             "source": "hosted_telegram_gate",
@@ -108,6 +143,12 @@ def hosted_meta_oauth_gate(payload):
             )
         return {"ok": True, "reply": reply}
     except Exception:
+        if "status" in locals() and status.get("connected"):
+            return {"ok": True, "reply": (
+                "Facebook is connected, but I could not finish preparing or saving the workspace selection. Reply here to retry."
+                if english else
+                "Facebook está conectado, pero no pude terminar de preparar o guardar la selección. Responde aquí para reintentarlo."
+            )}
         return {"ok": True, "reply": (
             "No pude preparar el enlace seguro de Facebook todavía. Inténtalo nuevamente en un minuto; no necesitas compartir ninguna clave por este chat."
             if not english else

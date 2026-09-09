@@ -151,6 +151,17 @@ been created, restricted and validated out of band.
 
 ### Internal credential-preparation dashboard
 
+Hosted Facebook onboarding is enforced by `tenant_turn.py` before the model
+is called: the first turn returns the secure link; after OAuth connects, the
+next buyer reply receives all publishable Pages followed by all ad accounts.
+The buyer sends `Page number, ad-account number`. The trusted-turn authorizer
+resolves that pair and the dashboard persists and verifies it before the
+existing strategic interview resumes. Invalid replies repeat the lists;
+already selected workspaces proceed without another selection prompt.
+Long inventories use the existing PostgreSQL outbox text chunking. Deploy
+the matching dashboard image and host `tenant_turn.py` together; the latter
+is injected by the active runtime broker, not read from the tenant image.
+
 The opt-in `operator-dashboard` profile serves a Spanish operator panel on
 `127.0.0.1:8791` only. Follow [OPERATOR_DASHBOARD.md](OPERATOR_DASHBOARD.md) for
 the exact private-directory, migration, first-password and access sequence.
