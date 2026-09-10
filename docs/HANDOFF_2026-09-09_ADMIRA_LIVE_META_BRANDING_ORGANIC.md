@@ -4,7 +4,7 @@ Fecha: 2026-09-09
 Checkout: `.contabo-multitenant-work`  
 Branch: `feat/contabo-multitenant`  
 Base revisada: `e37545c`  
-Estado al cerrar la auditoría: implementación local validada; construcción y rollout se registrarán al final.
+Estado: implementación bd83eb7af465fe4745ffc4635336ee5476e942a8 construida y desplegada. Nuevo default y Dorian actualizados; ver sección 11.
 
 Este documento reemplaza el handoff anterior. Resume lo que ya estaba hecho, lo que fue corregido al auditarlo y las validaciones reales y los pasos de rollout. La auditoría de Astra ya se ejecutó; este documento conserva el estado verificable de la implementación. No contiene credenciales ni API keys.
 
@@ -21,7 +21,7 @@ Se conservaron los arreglos válidos de Sol y se corrigieron inconsistencias que
 
 No se reemplazó la clasificación semántica por filtros rígidos de palabras. Las decisiones siguen basadas en estado backend, contexto, herramientas y confirmaciones naturales.
 
-## 2. Imagen que usan las cuentas nuevas
+## 2. Imagen previa y nuevo default
 
 La verificación remota del entorno activo mostró:
 
@@ -30,7 +30,7 @@ La verificación remota del entorno activo mostró:
 - Broker de propuestas: `admira-ia-hosted:proposal-pool-0dcae21ac47d`.
 - Dashboard de operadores: `admira-operator:onboarding-9114afc34c96`.
 
-Por tanto, las cuentas nuevas se están creando actualmente con `r99-canary-fb1fd7e329a4`. Este es el estado previo a la promoción descrita al final del documento.
+Antes de esta promoción, las cuentas nuevas usaban `r99-canary-fb1fd7e329a4`. Desde esta promoción usan `r99-canary-bd83eb7af465`. Este es el estado previo a la promoción descrita al final del documento.
 
 ## 3. Meta vivo por turno y caché anual
 
@@ -138,21 +138,43 @@ También se añadieron a los grupos runtime `organic`, `creative` e `insights` d
 
 ## 10. Validación ejecutada
 
-- Suite Linux con Hermes instalado: **1149 tests**, OK, 7 omitidos por sus condiciones de entorno. Se excluyó únicamente el método host-only que exige Docker Compose y `.env` del servidor desde dentro del contenedor; ese test pasa en el entorno local.
-- Tras añadir compatibilidad del pool para tenants antiguos, encuadre del creativo, conservación de rechazos y repetición temporal: 46 tests focalizados de historial/branding y pool, OK. La suite completa se repetirá sobre el commit final.
+- Suite completa en la imagen final `r99-canary-bd83eb7af465`, sin volúmenes de comprador y sin red: **1153 tests**, OK, 7 omitidos por sus condiciones de entorno. Se excluyó únicamente el método host-only que exige Docker Compose y `.env` del servidor desde dentro del contenedor; ese test pasa en el entorno local.
+- Tras añadir compatibilidad del pool para tenants antiguos, encuadre del creativo, conservación de rechazos y repetición temporal: 46 tests focalizados de historial/branding y pool, OK. La suite final anterior incluye estas correcciones.
 - 26 assertions de integración del runner propio: branding antes de revisión, cron con 15 días/vaults, persistencia real de archivos, preparación/publicación orgánica con aprobación.
 - `git diff --check` y compilación de módulos correctos.
 - Meta anual real, Gemini 3.7 real de siete campos y captura visual pública reales verificados en contenedores aislados. No se publicaron anuncios/posts ni se enviaron mensajes Telegram.
 
 La importación `agent.prompt_builder` que fallaba en el checkout local queda resuelta al ejecutar los tests en la imagen Linux con Hermes. Otra prueba de compositor requería crear `/app/output/creatives` en el contenedor de tests; el mismo supuesto falla en la imagen base sin cambios. El runner prepara ese directorio, sin modificar el producto para esconder la diferencia de entorno.
 
-## 11. Promoción y comprobaciones finales
+## 11. Promoción ejecutada y reversión
 
-1. Crear commit inmutable, construir la imagen hosted, verificar etiquetas/manifiesto y repetir pruebas del artefacto.
-2. Actualizar primero el pool central con compatibilidad simultánea de estrategias viejas y nuevas.
-3. Actualizar el selector del provisioner y el compose de Dorian cuando no haya turno activo; conservar imágenes y configuración anteriores para reversión.
-4. Verificar imagen efectiva del provisioner, arranque y herramientas del tenant, conservación del negocio/conexión/sesión y funcionamiento del browser.
+Promoción verificada 2026-09-10 03:25 UTC (noche del 9 de septiembre en Bogotá):
 
-No se ha simulado una conversación del comprador enviando mensajes en su nombre. Tampoco se ha publicado contenido en Meta para verificarlo. El cron completo con generación/entrega debe observarse en uso autorizado. El fallo histórico del pool (429/revocación) está documentado en `deploy/contabo/CONVERSATION_RECOVERY_20260909.md`; no atribuir una lectura Gemini vacía a cuota sin evidencia del proveedor.
+- Commit de implementación: `bd83eb7af465fe4745ffc4635336ee5476e942a8`.
+- Imagen tenant y central: `admira-ia-hosted:r99-canary-bd83eb7af465`.
+- Build completo mediante `deploy/contabo/build-hosted-runtime.sh`, desde Git limpio, sin overlay de archivos mutable. ID corto `a8aa5edb45d1`.
+- Manifiesto fuente: `22a35ed0c46f46575766658dc2d029f5cd0cf0d7b588254180e81936766b76ef`.
+- Source checkout remoto: `/srv/admira/releases/runtime-bd83eb7af465`.
+- El proceso real de `admira-tenant-provisioner` confirma el nuevo `ADMIRA_TENANT_IMAGE`. La fuente es `/etc/systemd/system/admira-tenant-provisioner.service.d/tenant-image.conf`; no existe `/etc/admira/tenant-provisioner.env` en este host.
+- `/srv/admira/tenants/dorian1/compose.yaml` fija la nueva imagen. Se arrancó realmente con ella, respondió en el puerto interno 7871, se verificó que negocio y OAuth no cambiaron y se devolvió a su estado dormido. Su próximo turno la despierta por la ruta habitual.
+- El broker central está activo en la misma imagen. Se comprobaron sockets y esquemas de 5 campos para tenants antiguos / 7 para la nueva operación integrada.
+- Una comparación independiente de los siete archivos de negocio, OAuth, branding y sesiones presentes en el backup mostró cero diferencias. El módulo real `tenantctl.selected_runtime_image()` también resolvió la nueva imagen a partir del entorno del provisioner.
+- Poller, delivery, runtime-worker y scheduler-worker están activos. La promoción empezó con cero turnos/jobs/imágenes en ejecución; runtime y scheduler se pausaron brevemente y reanudaron. No se cambió la imagen de otros tenants.
+- Dos intentos iniciales restauraron la configuración al consultar demasiado pronto el entorno del proceso durante el reinicio. Se corrigió la verificación para esperar la inicialización efectiva; la promoción final está confirmada por una segunda lectura independiente del proceso.
 
-El resultado exacto del rollout y sus referencias de reversión se añadirá aquí después de ejecutarlo.
+Backup privado completo: `/srv/admira/backups/branding-organic-bd83eb7af465-final`.
+Contiene compose de Dorian, `.env` del control plane, drop-in del provisioner, `dorian1-state.tgz`, imágenes previas y resultado de la promoción. Las imágenes antiguas se conservaron.
+
+Reversión de código/configuración: restaurar el compose y drop-in de esa copia, fijar `CENTRAL_IMAGE_IMAGE=admira-ia-hosted:proposal-pool-0dcae21ac47d`, recargar systemd, reiniciar el provisioner y recrear solo el broker central. El tenant anterior es `admira-ia-hosted:r99-canary-fb1fd7e329a4`. Respetar un turno en curso antes de recrear Dorian. No restaurar el archivo de datos completo sobre mensajes nuevos: el backup de estado es para recuperación deliberada, no para revertir código.
+
+## 12. Límites de lo verificado
+
+No se enviaron mensajes Telegram en nombre del comprador ni se publicaron posts/anuncios en Meta durante esta validación. La tanda autónoma completa con Image 2 y entrega diaria requiere la aceptación del plan/cadencia correspondiente y disponibilidad del proveedor de imágenes. El código, persistencia, scheduling y contratos están implementados; no confundirlos con una publicación real de prueba.
+
+Los planes antiguos confirmados permanecen intactos. Para incorporarles orgánico se puede acordar una revisión natural del plan; no se reabre su aprobación silenciosamente. Ads Library aporta referencias públicas y señales observables, nunca prueba de conversiones o rentabilidad de competidores.
+
+El fallo histórico del pool (429/revocación) está documentado en `deploy/contabo/CONVERSATION_RECOVERY_20260909.md`. Gemini Flash real sí respondió correctamente. No atribuir una respuesta vacía a cuota sin evidencia del proveedor.
+
+Prueba posterior al deploy: una solicitud firmada de siete secciones llegó al broker por el socket real y devolvió `provider_failed`. Los dos contratos del broker están cargados correctamente y Gemini 3.7 real sigue siendo la ruta primaria verificada; no declarar exitoso el respaldo de ChatGPT por este resultado.
+
+Diagnóstico privado posterior, reducido a categorías seguras: cuenta central `primary` → `codex_usage_limit`; `secondary` → `provider_auth`. Esta evidencia pertenece al pool de ChatGPT/Codex, no a Google AI Studio. Hace falta disponibilidad de la primaria o reconectar la secundaria para verificar generación completa por ese pool. No se imprimieron credenciales ni respuestas OAuth crudas.
