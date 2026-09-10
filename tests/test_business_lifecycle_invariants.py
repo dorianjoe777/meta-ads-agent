@@ -313,7 +313,7 @@ class BusinessLifecycleInvariantTests(unittest.TestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(first.count("Preparé esta propuesta inicial de anuncios"), 1)
-        self.assertEqual(first.count("Propuesta inicial de anuncios"), 1)
+        self.assertEqual(first.count("Propuesta estratégica: anuncios y contenido orgánico"), 1)
         self.assertIn("value-advertising_opportunity", first)
 
 

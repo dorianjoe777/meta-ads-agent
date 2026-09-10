@@ -62,6 +62,26 @@ def metrics_source_context(metrics):
 def account_context(payload, include_pending_approvals=False):
     metrics = payload.get("metrics", {})
     source_context = metrics_source_context(metrics)
+    live_meta_sync = payload.get("live_meta_sync", {}) if isinstance(payload.get("live_meta_sync"), dict) else {}
+    if live_meta_sync.get("attempted"):
+        source_context = dict(source_context)
+        live_ok = bool(live_meta_sync.get("ok"))
+        partial = bool(live_meta_sync.get("partial"))
+        source_context["fresh"] = bool(live_ok and not partial)
+        source_context["live_sync_ok"] = live_ok
+        source_context["partial"] = partial
+        source_context["last_confirmed_at"] = live_meta_sync.get("fetched_at") or metrics.get("timestamp") or ""
+        if not live_ok:
+            source_context["notice"] = (
+                "La lectura live de Meta no pudo confirmarse en este turno. "
+                "Trata campañas y métricas adjuntas solo como el último estado confirmado; "
+                "no presentes una lista vacía ni datos cacheados como estado actual."
+            )
+        elif partial:
+            source_context["notice"] = (
+                "Meta respondió parcialmente en este turno. Usa como actuales solo los objetos verificados "
+                "y no interpretes una sección faltante como cero."
+            )
     has_real_metrics = source_context["is_real_meta_data"]
     summary = metrics.get("summary", {})
     campaigns = metrics.get("campaigns", [])
@@ -93,6 +113,8 @@ def account_context(payload, include_pending_approvals=False):
         "agent_onboarding_phase": agent_onboarding_phase if isinstance(agent_onboarding_phase, dict) else {},
         "business_profile": business_profile if isinstance(business_profile, dict) else {},
         "metrics_source": source_context,
+        "live_meta_sync": live_meta_sync,
+        "meta_history": payload.get("meta_history") or {},
         "inventory_counts": {
             "campaigns": len(campaigns) if isinstance(campaigns, list) else 0,
             "adsets": len(adsets) if isinstance(adsets, list) else 0,

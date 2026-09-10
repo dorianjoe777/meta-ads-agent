@@ -347,33 +347,9 @@ def published_social_post_for_approval(approval_id):
 
 
 def record_social_post_publication(payload, result):
-    ledger = read_json(ORGANIC_CONTENT_POSTS_FILE, {"items": [], "updated_at": ""})
-    if not isinstance(ledger, dict):
-        ledger = {"items": [], "updated_at": ""}
-    items = [item for item in ledger.get("items", []) if isinstance(item, dict)]
-    approval_id = str(payload.get("approval_id") or "").strip()
-    record = {
-        "approval_id": approval_id,
-        "draft_id": str(payload.get("draft_id") or "").strip(),
-        "name": str(payload.get("name") or "Post orgánico").strip(),
-        "page_id": str(payload.get("page_id") or "").strip(),
-        "post_id": str(result.get("post_id") or "").strip(),
-        "pillar": str(payload.get("pillar") or "").strip(),
-        "objective": str(payload.get("objective") or "").strip(),
-        "caption": str(payload.get("message") or payload.get("caption") or "").strip()[:4000],
-        "image_path": str(payload.get("image_path") or "").strip(),
-        "image_url": str(payload.get("image_url") or "").strip(),
-        "video_path": str(payload.get("video_path") or "").strip(),
-        "video_url": str(payload.get("video_url") or "").strip(),
-        "media_type": str(payload.get("media_type") or ("video" if payload.get("video_path") or payload.get("video_url") else "image")).strip(),
-        "status": "published" if result.get("ok") else "failed",
-        "published_at": now_iso() if result.get("ok") else "",
-        "updated_at": now_iso(),
-    }
-    items = [item for item in items if item.get("approval_id") != approval_id]
-    items.insert(0, record)
-    write_json(ORGANIC_CONTENT_POSTS_FILE, {"items": items[:250], "updated_at": now_iso()})
-    return record
+    from organic_content_memory import save_post
+    return save_post(ORGANIC_CONTENT_POSTS_FILE, payload,
+                     status="published" if result.get("ok") else "failed", result=result)
 
 
 def publish_approved_social_post(payload, client):

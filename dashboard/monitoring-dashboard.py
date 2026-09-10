@@ -83,6 +83,7 @@ from codex_brand_guides import (
     call_codex_cli,
     composite_official_logo,
     ensure_brand_guides,
+    extract_logo_background_to_transparency,
     guide_library,
     hermes_codex_image_status,
     image_purpose_is_organic,
@@ -3221,6 +3222,18 @@ def save_daily_social_content_settings(payload):
     }
 
 
+def record_organic_content_proposal(payload):
+    from organic_content_memory import save_post
+    payload = dict(payload or {})
+    paths = safe_image_paths(payload)
+    if paths:
+        payload["image_path"] = paths[0]
+    if not str(payload.get("caption") or payload.get("message") or "").strip():
+        raise ValueError("La propuesta requiere su caption exacto.")
+    payload["page_id"] = active_meta_page_id()
+    return {"saved": True, "proposal": save_post(ORGANIC_CONTENT_POSTS_FILE, payload)}
+
+
 def stage_organic_social_post(payload):
     payload = dict(payload or {})
     caption = str(payload.get("caption") or payload.get("message") or payload.get("copy") or "").strip()
@@ -3247,6 +3260,8 @@ def stage_organic_social_post(payload):
     media_type = "video" if (video_path or video_url) else "image"
     identity = business_identity(payload)
     page_id = str(payload.get("page_id") or payload.get("facebook_page_id") or identity.get("page_id") or "").strip()
+    from organic_content_memory import save_post
+    proposal = save_post(ORGANIC_CONTENT_POSTS_FILE, {**payload, "caption": caption, "page_id": page_id, "image_path": image_path, "video_path": video_path})
     status = publishing_status(load_config(), {"page_id": page_id})
     missing = []
     if not page_id:
@@ -3289,10 +3304,15 @@ def stage_organic_social_post(payload):
         "why_it_fits": str(payload.get("why_it_fits") or payload.get("rationale") or "").strip(),
         "requested": f"Publicar este {media_type} orgánico visible en la Página de Facebook después de aprobación explícita.",
     }
+    approval_payload["draft_id"] = proposal["draft_id"]
+    for key in ("topic", "offer", "hook", "visual_concept", "format", "vault_name", "content_group", "content_asset_ids"):
+        if key in payload:
+            approval_payload[key] = payload[key]
+    save_post(ORGANIC_CONTENT_POSTS_FILE, {**approval_payload, "caption": caption}, status="pending_approval")
     approval = add_pending("publish_social_post", approval_payload)
     log_action(
         "organic_social_post_stage",
-        {"approval_id": approval_id, "draft_id": draft_id, "page_id": page_id, "pillar": approval_payload["pillar"]},
+        {"approval_id": approval_id, "draft_id": proposal["draft_id"], "page_id": page_id, "pillar": approval_payload["pillar"]},
         "pending_approval",
     )
     return {
@@ -3302,7 +3322,7 @@ def stage_organic_social_post(payload):
         "approval_required": True,
         "approval": approval,
         "approval_id": approval_id,
-        "draft_id": draft_id,
+        "draft_id": proposal["draft_id"],
         "caption": caption,
         "image_path": image_path,
         "video_path": video_path,
@@ -3321,6 +3341,10 @@ CONTENT_ASSET_CATEGORIES = {
     "style_reference": {"reference", "referencia", "style", "estilo", "inspiration", "inspiracion", "inspiración"},
     "offer_promo": {"promo", "promotion", "promocion", "promoción", "discount", "descuento"},
     "social_proof": {"proof", "prueba", "review", "reviews", "reseña", "resena", "result"},
+    "competitor_inspired_creative": {
+        "competitor_inspired_creative", "competitor_creative", "competition_creative",
+        "creative_from_competition", "competencia", "inspirado_en_competencia",
+    },
     "brand_graphic_element": {"brand_graphic_element", "branding_element", "brand_element", "elemento_de_marca", "elemento_grafico_de_marca"},
     "motion_graphic_element": {"motion_graphic_element", "motion_element", "video_element", "elemento_motion", "elemento_de_video"},
     "story_element": {"story_element", "narrative_element", "scene_element", "story_prop", "elemento_narrativo", "elemento_de_escena"},
@@ -3338,6 +3362,7 @@ PIXEL_LOCKED_CONTENT_ASSET_CATEGORIES = {
     "ugc",
     "offer_promo",
     "social_proof",
+    "competitor_inspired_creative",
     "brand_graphic_element",
     "motion_graphic_element",
     "story_element",
@@ -3387,7 +3412,7 @@ def load_content_asset_library():
             )
             changed = True
         if "approved_for_daily_content" not in item:
-            item["approved_for_daily_content"] = item.get("classification_status") == "classified" and item.get("preservation_mode") != "prohibited"
+            item["approved_for_daily_content"] = category != "competitor_inspired_creative" and item.get("classification_status") == "classified" and item.get("preservation_mode") != "prohibited"
             changed = True
         if "approved_for_ads" not in item:
             item["approved_for_ads"] = False
@@ -3699,12 +3724,14 @@ def _upsert_content_asset_item(library, *, category, purpose, notes, file_record
         and preservation_mode == "style_only"
     )
     approved_daily_default = (
-        True
+        False
+        if category == "competitor_inspired_creative"
+        else True
         if brand_reference_eligible
         else classification_status == "classified" and preservation_mode not in {"prohibited", "pending_classification"}
     )
-    approved_daily = _truthy_payload_value(payload, "approved_for_daily_content", approved_daily_default)
-    approved_ads = _truthy_payload_value(payload, "approved_for_ads", brand_reference_eligible)
+    approved_daily = _truthy_payload_value(payload, "approved_for_daily_content", (item or {}).get("approved_for_daily_content", approved_daily_default))
+    approved_ads = _truthy_payload_value(payload, "approved_for_ads", (item or {}).get("approved_for_ads", brand_reference_eligible) or brand_reference_eligible)
     if category == "style_reference" and not (
         classification_status == "classified" and preservation_mode == "style_only"
     ):
@@ -3725,6 +3752,30 @@ def _upsert_content_asset_item(library, *, category, purpose, notes, file_record
         "category": category,
         "purpose": purpose or str(item.get("purpose") or ""),
         "notes": notes or str(item.get("notes") or ""),
+        "vault_name": str(payload.get("vault_name") or item.get("vault_name") or "").strip()[:180],
+        "content_group": str(
+            payload.get("content_group")
+            or payload.get("group_name")
+            or payload.get("case_id")
+            or item.get("content_group")
+            or ""
+        ).strip()[:180],
+        "source_reference_url": str(
+            payload.get("source_reference_url")
+            or payload.get("competitor_ad_url")
+            or payload.get("ad_library_url")
+            or item.get("source_reference_url")
+            or ""
+        ).strip()[:1200],
+        "source_reference_label": str(
+            payload.get("source_reference_label")
+            or payload.get("competitor_name")
+            or item.get("source_reference_label")
+            or ""
+        ).strip()[:240],
+        "inspiration_angle": str(payload.get("inspiration_angle") or item.get("inspiration_angle") or "").strip()[:1200],
+        "inspiration_structure": str(payload.get("inspiration_structure") or item.get("inspiration_structure") or "").strip()[:1800],
+        "research_observed_at": str(payload.get("research_observed_at") or item.get("research_observed_at") or "").strip()[:80],
         "preservation_mode": preservation_mode,
         "classification_status": classification_status,
         "approved_for_daily_content": bool(approved_daily),
@@ -3740,7 +3791,22 @@ def _upsert_content_asset_item(library, *, category, purpose, notes, file_record
         "background_removed": _truthy_payload_value(payload, "background_removed", bool(item.get("background_removed"))),
         "updated_at": now,
     }
-    if category == "style_reference":
+    item_update["reference_role"] = str(payload.get("reference_role") or item.get("reference_role") or "")
+    if item_update["reference_role"] == "competitor_structure":
+        item_update.update(reference_scope="task", reusable=False, approved_for_ads=False, approved_for_daily_content=False)
+    if category == "competitor_inspired_creative":
+        requested_candidate_status = str(payload.get("creative_candidate_status") or "").strip().lower()
+        if requested_candidate_status == "rejected" or (
+            item.get("creative_candidate_status") == "rejected" and not approved_ads
+            and requested_candidate_status != "proposed"
+        ):
+            item_update.update(approved_for_ads=False, creative_candidate_status="rejected")
+        elif approved_ads:
+            item_update["creative_candidate_status"] = "saved_for_paid"
+        else:
+            item_update["creative_candidate_status"] = "proposed"
+        item_update["approved_for_daily_content"] = False
+    if category == "style_reference" and item_update.get("reference_role") != "competitor_structure":
         item_update["reference_scope"] = reference_scope
     item.update(item_update)
     if file_record:
@@ -3872,6 +3938,81 @@ def save_content_asset_memory(payload, chat_payload=None):
         "saved_asset_count": len(saved_items),
         "library_file": "dashboard/data/content_asset_library.json",
         "count": len(library["items"]),
+    }
+
+
+def search_content_asset_memory(payload=None):
+    payload = dict(payload or {})
+    library = load_content_asset_library()
+    query = re.sub(r"\s+", " ", str(payload.get("query") or "").strip()).casefold()
+    category = normalize_content_asset_category(payload.get("category")) if payload.get("category") else ""
+    vault = re.sub(r"\s+", " ", str(payload.get("vault_name") or "").strip()).casefold()
+    approved_filter = payload.get("approved_for_ads")
+    has_approved_filter = isinstance(approved_filter, bool)
+    try:
+        limit = max(1, min(50, int(payload.get("limit") or 20)))
+    except (TypeError, ValueError):
+        limit = 20
+
+    matches = []
+    searchable_keys = (
+        "category", "purpose", "notes", "vault_name", "content_group",
+        "source_reference_url", "source_reference_label", "inspiration_angle",
+        "inspiration_structure", "product_scope", "visual_role",
+        "creative_candidate_status",
+    )
+    items = [item for item in library.get("items") or [] if isinstance(item, dict)]
+    for item in sorted(items, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True):
+        if payload.get("asset_id") and item.get("id") != payload["asset_id"]:
+            continue
+        if isinstance(payload.get("approved_for_daily_content"), bool) and bool(item.get("approved_for_daily_content")) != payload["approved_for_daily_content"]:
+            continue
+        if payload.get("product_scope") and str(payload["product_scope"]).casefold() not in str(item.get("product_scope") or "").casefold():
+            continue
+        if category and str(item.get("category") or "") != category:
+            continue
+        if vault and vault not in str(item.get("vault_name") or "").casefold():
+            continue
+        if has_approved_filter and bool(item.get("approved_for_ads")) is not approved_filter:
+            continue
+        haystack = " ".join(str(item.get(key) or "") for key in searchable_keys).casefold()
+        if query and query not in haystack:
+            continue
+        matches.append({
+            "id": str(item.get("id") or ""),
+            "category": str(item.get("category") or ""),
+            "vault_name": str(item.get("vault_name") or ""),
+            "content_group": str(item.get("content_group") or ""),
+            "purpose": str(item.get("purpose") or ""),
+            "notes": str(item.get("notes") or ""),
+            "product_scope": str(item.get("product_scope") or ""),
+            "visual_role": str(item.get("visual_role") or ""),
+            "preservation_mode": item.get("preservation_mode"),
+            "classification_status": item.get("classification_status"),
+            "reference_scope": item.get("reference_scope"),
+            "reference_role": item.get("reference_role"),
+            "approved_for_ads": bool(item.get("approved_for_ads")),
+            "approved_for_daily_content": bool(item.get("approved_for_daily_content")),
+            "creative_candidate_status": str(item.get("creative_candidate_status") or ""),
+            "source_reference_url": str(item.get("source_reference_url") or ""),
+            "source_reference_label": str(item.get("source_reference_label") or ""),
+            "inspiration_angle": str(item.get("inspiration_angle") or ""),
+            "inspiration_structure": str(item.get("inspiration_structure") or ""),
+            "research_observed_at": str(item.get("research_observed_at") or ""),
+            "file_paths": list(item.get("file_paths") or [])[:4],
+            "created_at": str(item.get("created_at") or ""),
+            "updated_at": str(item.get("updated_at") or ""),
+        })
+        if len(matches) >= limit:
+            break
+    return {
+        "ok": True,
+        "matches": matches,
+        "count": len(matches),
+        "total_assets": len(library.get("items") or []),
+        "query": str(payload.get("query") or ""),
+        "category": category,
+        "vault_name": str(payload.get("vault_name") or ""),
     }
 
 
@@ -10111,6 +10252,8 @@ _MASTER_PLAN_FIELDS = (
     "audience_and_message",
     "campaign_and_creative_plan",
     "budget_and_measurement",
+    "organic_content_strategy",
+    "organic_daily_plan",
     "next_steps_and_questions",
 )
 
@@ -10119,8 +10262,22 @@ _MASTER_PLAN_LABELS = {
     "audience_and_message": "Audiencia y mensaje",
     "campaign_and_creative_plan": "Campaña y conceptos creativos",
     "budget_and_measurement": "Presupuesto y medición",
+    "organic_content_strategy": "Estrategia de contenido orgánico",
+    "organic_daily_plan": "Propuestas diarias y rotación",
     "next_steps_and_questions": "Próximos pasos para pulirlo",
 }
+
+
+def _plan_section_limit(field):
+    return {"organic_content_strategy": 850, "organic_daily_plan": 650}.get(field, 420)
+
+
+def _plan_required_fields(plan):
+    # Existing approved plans remain valid; a release never silently reopens them.
+    material = plan.get("content") or plan.get("draft") or {}
+    if int(plan.get("schema_version") or 1) < 2 and not any(material.get(key) for key in ("organic_content_strategy", "organic_daily_plan")):
+        return tuple(field for field in _MASTER_PLAN_FIELDS if not field.startswith("organic_"))
+    return _MASTER_PLAN_FIELDS
 
 
 def _normalize_master_plan(value):
@@ -10136,7 +10293,7 @@ def _normalize_master_plan(value):
             # everything into one line made a complete plan look like a terse
             # campaign note when it reached Telegram.
             lines = [re.sub(r"[ \t]+", " ", line).strip() for line in item.splitlines()]
-            normalized[field] = "\n".join(lines).strip()[:420]
+            normalized[field] = "\n".join(lines).strip()[:_plan_section_limit(field)]
         else:
             normalized[field] = redact_payload(item)
     return normalized
@@ -10164,7 +10321,7 @@ def business_master_plan_readiness(profile=None, page_id=None):
     )
     material = material if isinstance(material, dict) else {}
     missing_fields = [
-        field for field in _MASTER_PLAN_FIELDS
+        field for field in _plan_required_fields(plan)
         if material.get(field) in (None, "", [], {})
     ]
     material_complete = not missing_fields
@@ -10426,6 +10583,41 @@ def _strategic_review_value(entry):
     return re.sub(r"\s+", " ", str(value or "")).strip()[:320]
 
 
+def brand_foundation_snapshot():
+    """Stable official brand values; volatile timestamps never authorize a review."""
+    library = guide_library()
+    fields = dict((library.get("general") or {}).get("fields") or {})
+    references = []
+    for item in load_content_asset_library().get("items") or []:
+        if item.get("category") == "style_reference" and item.get("reference_scope") == "brand":
+            references.append({key: item.get(key) for key in (
+                "id", "source_sha256", "purpose", "notes", "classification_status",
+                "approved_for_ads", "approved_for_daily_content",
+            )})
+    references.sort(key=lambda item: str(item.get("id") or ""))
+    logo_paths = safe_image_paths({"image_paths": [fields.get("logo_path")]}) if fields.get("logo_path") else []
+    try:
+        reference_notes = Path(library.get("creative_references") or "").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        reference_notes = ""
+    return {
+        "page_id": active_meta_page_id(),
+        "fields": fields,
+        "logo_sha256": content_asset_sha256(logo_paths[0]) if logo_paths else "",
+        "references": references,
+        "reference_notes": reference_notes,
+    }
+
+
+def _foundation_review_matches(strategic):
+    evidence = ((strategic.get("review_presentation") or {}).get("evidence") or {})
+    return bool(
+        branding_creatives_status() == "completed"
+        and evidence.get("brand_foundation_hash")
+        == _plan_content_hash(brand_foundation_snapshot())
+    )
+
+
 def business_profile_review_summary(profile):
     canonical = migrate_strategic_profile(profile)
     revision = int(canonical.get("revision") or 0)
@@ -10436,7 +10628,21 @@ def business_profile_review_summary(profile):
         label = _STRATEGIC_REVIEW_LABELS[topic]
         status = _STRATEGIC_REVIEW_STATUSES.get(str(entry.get("status") or ""), "pendiente")
         lines.append(f"- {label} [{status}]: {_strategic_review_value(entry)}")
-    lines.append("Puedes corregir cualquier punto o confirmar este resumen del negocio con tus propias palabras.")
+    foundation = brand_foundation_snapshot()
+    labels = {"brand_name": "Marca", "colors": "Colores", "visual_style": "Estilo visual",
+              "tone": "Tono", "personality": "Personalidad", "logo_usage": "Decisión y uso de logo",
+              "references": "Referencias", "asset_notes": "Material real", "restrictions": "Restricciones"}
+    for key, label in labels.items():
+        value = foundation["fields"].get(key)
+        if value:
+            lines.append(f"- {label}: {value}")
+    if foundation["fields"].get("logo_path"):
+        lines.append("- Logo oficial: archivo guardado y disponible.")
+    for reference in foundation["references"]:
+        lines.append(f"- Elementos de referencia: {reference.get('purpose') or ''}; {reference.get('notes') or ''}")
+    if foundation.get("reference_notes"):
+        lines.append("Referencias y reglas visuales:\n" + foundation["reference_notes"])
+    lines.append("Puedes corregir cualquier punto o confirmar esta base de negocio y branding con tus propias palabras.")
     return "\n".join(lines)
 
 
@@ -10457,31 +10663,13 @@ def _assistant_summary_covers_strategic_profile(profile, assistant_text):
 
 
 def ensure_canonical_strategic_review_visible(assistant_text):
-    """Append the canonical review only when the agent is already requesting it.
+    """Present the completed current foundation once before binding approval.
 
-    The model may naturally combine several topics into fewer buyer-friendly
-    bullets.  That is fine conversationally, but the confirmation transaction
-    must bind to every current official value.  At the finalized outbound
-    boundary, add the canonical server-owned summary if (and only if) the
-    agent's own response clearly presents a strategic review and asks the
-    buyer to confirm or correct it.  Ordinary onboarding replies are untouched.
+    Backend readiness, rather than keywords in model prose, owns this single
+    transition. Ordinary replies resume once this foundation is presented.
     """
     text = str(assistant_text or "")
-    normalized = _normalized_confirmation_text(text)
-    review_intent = bool(
-        (
-            re.search(r"\b(?:resumen|perfil|revision) estrateg\w*\b", normalized)
-            or re.search(
-                r"\b(?:resumen|perfil|revision|base) (?:del )?negocio\b",
-                normalized,
-            )
-        )
-        and re.search(
-            r"\b(?:confirm\w*|correg\w*|correccion\w*|ajust\w*|correct\w*)\b",
-            normalized,
-        )
-    )
-    if not review_intent:
+    if branding_creatives_status() != "completed":
         return text
     page_id = active_meta_page_id()
     profile = read_json(BUSINESS_PROFILE_FILE, {})
@@ -10491,13 +10679,14 @@ def ensure_canonical_strategic_review_visible(assistant_text):
     readiness = strategic_profile_readiness(strategic, active_page_id=page_id)
     if not readiness.get("review_required"):
         return text
+    if _foundation_review_matches(strategic):
+        return text
     if _assistant_summary_covers_strategic_profile(strategic, text):
         return text
     canonical = business_profile_review_summary(strategic)
-    # Replace an incomplete model artifact instead of sending two competing
-    # summaries.  The model's useful prose is retained only as a short intro.
+    # One artifact owns the confirmation; preserve native media delivery.
     intro = "He consolidado el resumen actual del negocio para revisarlo contigo:"
-    return f"{intro}\n\n{canonical}".strip()
+    return "\n\n".join([intro, canonical, *_native_media_directives(text)]).strip()
 
 
 def record_strategic_review_presented(session_id, assistant_text, chat_id=""):
@@ -10518,6 +10707,8 @@ def record_strategic_review_presented(session_id, assistant_text, chat_id=""):
         readiness = strategic_profile_readiness(strategic, active_page_id=page_id)
         if not readiness.get("review_required"):
             return {"recorded": False, "reason": "review_not_ready"}
+        if branding_creatives_status() != "completed":
+            return {"recorded": False, "reason": "branding_not_ready"}
         if not _assistant_summary_covers_strategic_profile(strategic, assistant_text):
             return {"recorded": False, "reason": "review_summary_incomplete"}
         message_hash = hashlib.sha256(
@@ -10530,6 +10721,7 @@ def record_strategic_review_presented(session_id, assistant_text, chat_id=""):
             assistant_message_hash=message_hash,
             evidence={
                 "source": "finalized_outbound_transport",
+                "brand_foundation_hash": _plan_content_hash(brand_foundation_snapshot()),
                 "chat_id": str(turn.get("chat_id") or ""),
                 "session_id": str(turn.get("session_id") or ""),
                 "transport": str(turn.get("transport") or ""),
@@ -10580,7 +10772,7 @@ def _master_plan_record_is_complete(plan):
         material = plan.get("draft") or plan.get("content")
     else:
         material = plan.get("draft") or plan.get("content")
-    return _master_plan_is_complete(material)
+    return bool(isinstance(material, dict) and all(material.get(field) for field in _plan_required_fields(plan)))
 
 
 def _strategic_plan_generation_time(value):
@@ -10628,6 +10820,7 @@ def _strategic_plan_business_source(profile, strategic, page_id, account_id=""):
         "confirmed_business_topics": topics,
         "public_business_context": {"website_url": str(profile.get("website_url") or ""), "social_links": profile.get("social_links") or [], "meta_page_profile": meta_page},
         "official_brand": general_fields,
+        "brand_foundation": brand_foundation_snapshot(),
         "official_products_and_services": products,
         "existing_campaign_briefs": ad_briefs,
         "ads_onboarding": ads_onboarding,
@@ -10638,7 +10831,7 @@ def _strategic_plan_business_source(profile, strategic, page_id, account_id=""):
 
 
 def _strategic_plan_live_meta_source(account_id="", timeout=90):
-    """Fetch an all-time, read-only Meta snapshot for plan grounding."""
+    """Fetch an last-30-day, read-only Meta snapshot for plan grounding."""
     account_id = clean_ad_account_id(account_id or current_configured_ad_account_id())
     account = managed_account_context(account_id)
     result_box = {}
@@ -10648,7 +10841,7 @@ def _strategic_plan_live_meta_source(account_id="", timeout=90):
             result_box["result"] = refresh_real_metrics(
                 account_id,
                 reason="strategic_plan_compiler",
-                date_preset="maximum",
+                date_preset="last_30d",
                 persist=False,
                 include_breakdowns=False,
             )
@@ -10667,7 +10860,7 @@ def _strategic_plan_live_meta_source(account_id="", timeout=90):
         result = {
             "ok": False,
             "reason": "live_meta_sync_timeout",
-            "message": "The bounded all-time Meta read did not finish before plan compilation.",
+            "message": "The bounded last-30-day Meta read did not finish before plan compilation.",
         }
     metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
     campaigns = metrics.get("campaigns") if isinstance(metrics.get("campaigns"), list) else []
@@ -10704,15 +10897,16 @@ def _strategic_plan_live_meta_source(account_id="", timeout=90):
         # Campaigns are the strategic evidence. Keep a generous complete view
         # for normal accounts and declare any safety cap instead of silently
         # implying that a truncated inventory is exhaustive.
-        "campaigns": campaigns[:500],
-        "adsets": adsets[:750],
-        "ads": ads[:1000],
+        "campaigns": campaigns[:40],
+        "adsets": adsets[:80],
+        "ads": ads[:120],
         "inventory_truncated": {
-            "campaigns": len(campaigns) > 500,
-            "adsets": len(adsets) > 750,
-            "ads": len(ads) > 1000,
+            "campaigns": len(campaigns) > 40,
+            "adsets": len(adsets) > 80,
+            "ads": len(ads) > 120,
         },
         "summary": metrics.get("summary") or {},
+        "annual_history": get_meta_history_context(background=True),
         "errors": result.get("errors") or [],
     }
     return redact_payload(source)
@@ -10842,6 +11036,7 @@ def ensure_initial_business_master_plan(*, config=None, timeout=300, expected_tu
             "revision": strategic.get("revision"),
             "status": strategic.get("status"),
             "topics": strategic.get("topics"),
+            "brand_foundation": brand_foundation_snapshot(),
         })
         generation_state = read_json(STRATEGIC_PLAN_GENERATION_STATE_FILE, {})
         generation_state = generation_state if isinstance(generation_state, dict) else {}
@@ -10928,6 +11123,7 @@ def ensure_initial_business_master_plan(*, config=None, timeout=300, expected_tu
                 "revision": latest_strategic.get("revision"),
                 "status": latest_strategic.get("status"),
                 "topics": latest_strategic.get("topics"),
+                "brand_foundation": brand_foundation_snapshot(),
             })
             state = read_json(STRATEGIC_PLAN_GENERATION_STATE_FILE, {})
             state = state if isinstance(state, dict) else {}
@@ -10978,6 +11174,7 @@ def ensure_initial_business_master_plan(*, config=None, timeout=300, expected_tu
             plan = dict(compiled.get("plan") or {})
             draft_hash = _plan_content_hash(plan)
             record = {
+                "schema_version": 2,
                 "status": "proposed",
                 "profile_revision": int(latest_strategic.get("revision") or 0),
                 "draft": plan,
@@ -11101,7 +11298,7 @@ def render_business_strategic_plan(plan, *, include_state=True):
         if status in {"proposed", "draft", "stale"} and plan.get("draft")
         else plan.get("content")
     ) or {}
-    lines = ["Propuesta inicial de anuncios"]
+    lines = ["Propuesta estratégica: anuncios y contenido orgánico" if content.get("organic_content_strategy") else "Propuesta inicial de anuncios"]
     if include_state:
         state_label = {
             "proposed": "borrador para conversar",
@@ -11110,7 +11307,7 @@ def render_business_strategic_plan(plan, *, include_state=True):
             "confirmed": "confirmado",
         }.get(status, str(plan.get("status") or "missing"))
         lines.append(f"Estado: {state_label}")
-    for index, field in enumerate(_MASTER_PLAN_FIELDS, start=1):
+    for index, field in enumerate(_plan_required_fields(plan), start=1):
         value = content.get(field) if isinstance(content, dict) else None
         if value in (None, "", [], {}):
             value = "Pendiente"
@@ -11118,10 +11315,12 @@ def render_business_strategic_plan(plan, *, include_state=True):
             rendered_value = "\n".join(
                 re.sub(r"[ \t]+", " ", line).strip()
                 for line in value.splitlines()
-            ).strip()[:420]
+            ).strip()[:_plan_section_limit(field)]
         else:
-            rendered_value = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)[:420]
+            rendered_value = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)[:_plan_section_limit(field)]
         lines.extend(["", f"{index}. {_MASTER_PLAN_LABELS[field]}", rendered_value])
+    if content.get("organic_content_strategy"):
+        lines.extend(["", "Puedes enviarme fotos cuando te convenga y decir en qué baúl guardarlas: testimonios, antes/después, sucursal, productos o servicios. Mientras falte material real apto usaré imágenes IA ilustrativas; nunca las presentaré como clientes, testimonios o resultados reales. La idea competitiva incluirá su enlace de Ads Library y podrás pedirme guardarla para futuros anuncios."])
     lines.extend([
         "",
         "Es un punto de partida. Dime qué parte cambiarías y lo pulimos juntos antes de convertirlo en el plan publicitario acordado.",
@@ -11153,7 +11352,7 @@ def _assistant_covers_current_plan_draft(plan, assistant_text):
     content = plan.get("draft") if str(plan.get("status") or "") in {"proposed", "draft", "stale"} else plan.get("content")
     content = content if isinstance(content, dict) else {}
     required_sections = []
-    for field in _MASTER_PLAN_FIELDS:
+    for field in _plan_required_fields(plan):
         value = content.get(field)
         if value in (None, "", [], {}):
             return False
@@ -11209,7 +11408,7 @@ def record_business_lifecycle_artifact_presented(session_id, assistant_text, cha
         profile = read_json(BUSINESS_PROFILE_FILE, {})
         page_id = active_meta_page_id()
         plan = business_master_plan_for_page(profile, page_id)
-        if str(plan.get("status") or "") != "proposed" or not _master_plan_is_complete(plan.get("draft")):
+        if str(plan.get("status") or "") != "proposed" or not _master_plan_record_is_complete(plan):
             return {"recorded": False, "reason": "plan_draft_missing"}
         if not _assistant_covers_current_plan_draft(plan, assistant_text):
             return {"recorded": False, "reason": "plan_presentation_incomplete"}
@@ -11259,7 +11458,7 @@ def ensure_business_lifecycle_artifact_visible(assistant_text, target=None, sess
                 return text
             profile = read_json(BUSINESS_PROFILE_FILE, {})
             plan = business_master_plan_for_page(profile)
-            if str(plan.get("status") or "") != "proposed" or not _master_plan_is_complete(plan.get("draft")):
+            if str(plan.get("status") or "") != "proposed" or not _master_plan_record_is_complete(plan):
                 return text
             if _plan_presentation_matches_current_draft(plan):
                 # The current draft was already shown. It may remain pending
@@ -11340,6 +11539,9 @@ def resolve_pending_business_lifecycle_transition(
                     "state": business_lifecycle_state(current_profile, scoped_page),
                 }
             presentation = artifact.get("review_presentation") if isinstance(artifact, dict) else None
+            if not _foundation_review_matches(artifact):
+                return {"transitioned": False, "reason": "brand_foundation_review_required",
+                        "state": business_lifecycle_state(current_profile, scoped_page)}
             bound_presentation = {
                 **(presentation or {}),
                 **((presentation or {}).get("evidence") or {}),
@@ -11362,7 +11564,7 @@ def resolve_pending_business_lifecycle_transition(
             if (
                 not strategic_readiness.get("complete")
                 or str(artifact.get("status") or "") != "proposed"
-                or not _master_plan_is_complete(artifact.get("draft"))
+                or not _master_plan_record_is_complete(artifact)
                 or not _plan_presentation_matches_current_draft(artifact)
                 or not _turn_matches_presentation(turn, presentation or {})
             ):
@@ -11407,6 +11609,7 @@ def resolve_pending_business_lifecycle_transition(
             })
             if (
                 latest_identity != artifact_identity
+                or not _foundation_review_matches(latest_artifact)
                 or latest_readiness.get("complete")
                 or latest_readiness.get("onboarding_completed")
                 or not latest_readiness.get("review_required")
@@ -11441,7 +11644,7 @@ def resolve_pending_business_lifecycle_transition(
             if (
                 latest_identity != artifact_identity
                 or not latest_strategic_readiness.get("complete")
-                or not _master_plan_is_complete(latest_artifact.get("draft"))
+                or not _master_plan_record_is_complete(latest_artifact)
                 or not _plan_presentation_matches_current_draft(latest_artifact)
                 or not _turn_matches_presentation(latest_turn, latest_presentation or {})
             ):
@@ -11452,6 +11655,9 @@ def resolve_pending_business_lifecycle_transition(
             latest_artifact["confirmed_revision"] = int(latest_artifact.get("draft_revision") or 1)
             latest_artifact["revision"] = int(latest_artifact.get("revision") or 0) + 1
             latest_artifact["draft"] = {}
+            organic = latest_artifact["content"].get("organic_content_strategy")
+            if organic:
+                CONTENT_STRATEGY_FILE.write_text("# Content strategy\n\n" + organic + "\n\n" + str(latest_artifact["content"].get("organic_daily_plan") or ""), encoding="utf-8")
             latest_profile.setdefault("business_master_plans", {})[scoped_page] = latest_artifact
         latest_profile["updated_at"] = now_iso()
         write_json(BUSINESS_PROFILE_FILE, latest_profile)
@@ -12594,25 +12800,36 @@ def agent_onboarding_phase(profile=None):
             "Facebook ya está autorizado. No pidas permisos ni otro enlace: muestra las cuentas y Páginas OAuth disponibles "
             "y espera a que el comprador elija una cuenta publicitaria y una Página activas."
         )
+    elif strategic_readiness.get("status") == "scope_mismatch":
+        phase = "business_discovery"
+        next_step = "Retomar o iniciar el perfil estratégico correspondiente a la Página activa; no mezclarlo con el negocio de otra Página."
+    elif strategic_readiness.get("status") == "collecting":
+        phase = "business_discovery"
+        missing = strategic_readiness.get("unresolved_topics") or []
+        next_step = (
+            "Continuar la conversación estratégica con una pregunta útil del dueño por turno. Pendientes: "
+            + ", ".join(missing)
+        )
+    elif strategic_readiness.get("review_required") and branding != "completed":
+        # Business facts are complete enough to review, but the buyer asked for
+        # branding to be part of the same final foundation. Do not bind or ask
+        # for final business-profile confirmation until logo/colors/style/
+        # references/real-asset decisions are complete.
+        phase = "branding_creatives_creation"
+        next_step = (
+            creative_readiness.get("next_question")
+            or "Completar logo, colores, estilo, tono, referencias y activos reales antes de presentar la revisión final del negocio."
+        )
     elif business != "completed":
         phase = "business_discovery"
-        if strategic_readiness.get("review_required"):
-            next_step = (
-                "Presentar en texto un resumen del negocio completo, invitar correcciones naturales "
-                "y guardar la confirmación del comprador para esta revisión exacta."
-            )
-        elif strategic_readiness.get("status") == "scope_mismatch":
-            next_step = "Retomar o iniciar el perfil estratégico correspondiente a la Página activa; no mezclarlo con el negocio de otra Página."
-        else:
-            missing = strategic_readiness.get("unresolved_topics") or []
-            next_step = (
-                "Continuar la conversación estratégica con una pregunta útil del dueño por turno. Pendientes: "
-                + ", ".join(missing)
-            )
+        next_step = (
+            "Con el branding ya completo, presentar una revisión final única de la información del negocio y la base de marca, "
+            "invitar correcciones naturales y guardar la confirmación del comprador para esta revisión exacta."
+        )
     elif master_plan.get("status") == "missing":
         phase = "business_master_plan"  # compatibility phase name
         next_step = (
-            "Convertir ahora el perfil confirmado en una propuesta publicitaria breve: oportunidad, audiencia y mensaje, "
+            "Convertir ahora negocio y branding confirmados en una estrategia integrada: contenido orgánico diario, oportunidad, audiencia y mensaje, "
             "campaña y creativos, presupuesto y medición, y preguntas para pulirla con el comprador."
         )
     elif branding != "completed":
@@ -12620,7 +12837,14 @@ def agent_onboarding_phase(profile=None):
         next_step = creative_readiness.get("next_question") or "Definir y confirmar con el comprador la marca, el logo, referencias, paleta, tono y activos antes de producir contenido o anuncios."
     elif organic_content != "completed":
         phase = "organic_content_strategy"
+        plan = business_master_plan_for_page(profile)
+        accepted_organic = (plan.get("content") or {}).get("organic_content_strategy") if plan.get("status") == "confirmed" else None
         next_step = (
+            "La estrategia orgánica ya fue aceptada dentro del plan integrado. Usa organic_daily_plan para guardar su "
+            "cadencia, cantidad y formatos con save_daily_social_content_settings; conserva el horario local existente "
+            "si el plan no lo cambia. No vuelvas a proponer ni pedir aprobación de la misma estrategia. Verifica el "
+            "resultado del cron antes de decir que los envíos automáticos están programados."
+        ) if accepted_organic else (
             "Con el branding ya confirmado, proponer una estrategia de contenido orgánico concreta: "
             "pilares, temas, frecuencia y piezas con Image 2 que siempre se muestran antes de publicar."
         )
@@ -12702,7 +12926,7 @@ Antes de hacer la primera pregunta, explica el camino con palabras simples:
 
 1. Primero conectaremos Facebook de forma segura para leer tus datos reales y no interrumpir el proceso después.
 2. Luego entenderé tu negocio y definiremos juntos la marca visual: logo real, paleta, estilo, tono, referencias y activos.
-3. Con esa base aprobada, propondré contenido orgánico y después aterrizaremos anuncios: ofertas específicas, estrategia, briefs y próximos pasos.
+3. Cuando negocio + branding estén completos, te mostraré una sola revisión final para corregir/aprobar la base. Después propondré la estrategia, incluyendo contenido orgánico y anuncios.
 
 Despues de explicar esto, pregunta tambien la preferencia global del operador: "Tienes experiencia creando o gestionando anuncios? Quieres que te explique cosas tecnicas con detalle, o prefieres que yo tome las decisiones de mejores practicas y te lo explique en palabras simples? Esto lo puedes cambiar cuando quieras."
 
@@ -12712,7 +12936,7 @@ Cuando responda, guarda esa preferencia con `save_agent_preferences` / `mcp_admi
 
 La primera acción no es una pregunta de negocio: consulta `mcp_admira_get_meta_oauth_workspaces` y, si no hay conexión, llama `mcp_admira_start_meta_oauth_connection` para enviar la URL segura de Facebook como texto visible a Telegram. Nunca pidas tokens, Usuario del sistema, app de Meta ni IDs técnicos. En el siguiente turno del comprador, lista primero las Páginas y después las cuentas publicitarias. Exige exactamente dos números sin texto: primero Página y después cuenta (`1, 8`). Cualquier otro formato se rechaza y vuelve a mostrar ambas listas. Después haz una sola pregunta clara de negocio: "Que vendes exactamente y cual es tu oferta principal hoy?"
 
-Al terminar y confirmar el onboarding general de negocio, entra primero en `branding_creatives_creation`: usa `Branding onboarding.md` para definir y confirmar logo, colores, estilo, tono, referencias y activos. Durante esta fase Image 2 puede crear candidatos reales de logo, moodboards o muestras de marca; siempre adjunta el archivo y revísalo con el comprador antes de guardarlo como oficial. Solo cuando el branding esté listo pasa a `organic_content_strategy` y presenta pilares, temas, frecuencia y borradores para revisión.
+Cuando el perfil del negocio ya tenga todos sus temas pero esté en `review_required`, NO pidas todavía la confirmación final. Entra primero en `branding_creatives_creation`: usa `Branding onboarding.md` para definir logo, colores, estilo, tono, referencias y activos. Durante esta fase Image 2 puede crear candidatos reales de logo, moodboards o muestras de marca; siempre adjunta el archivo y revísalo con el comprador antes de guardarlo como oficial. Cuando el branding esté completo, vuelve una sola vez a la revisión final consolidada; después de la aprobación del comprador continúa hacia la propuesta estratégica.
 
 ## Postura experta global
 
@@ -12729,7 +12953,9 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
 2. business_discovery
    - Entender que vende, oferta principal, productos/servicios prioritarios, cliente ideal, etapa actual, dolores, meta de 30 dias y tono comercial.
    - Preguntar una sola cosa a la vez.
-   - Guardar lo aprendido con `save_business_context`. La fase termina únicamente cuando el perfil estratégico completo y su revisión actual quedan confirmados; después abre branding.
+   - Guardar lo aprendido con `save_business_context`.
+   - Cuando todos los temas del negocio estén completos y el perfil llegue a `review_required`, no presentar todavía el resumen final: abrir branding primero.
+   - Después de completar branding, volver a esta fase únicamente para presentar una revisión final consolidada del negocio + base de marca y aceptar correcciones/confirmación naturales.
 
 3. branding_creatives_creation
    - Usar el skill `skills/branding-creatives-creation/SKILL.md`.
@@ -12738,6 +12964,7 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
    - No generar contenido ni anuncios finales todavía. Completar colores, estilo visual, tono, decisión de logo, decisión de referencias y decisión sobre fotos/activos reales.
    - Si falta logo y el comprador quiere crearlo, acordar nombre, categoría/oferta, paleta, estilo y tono; generar un candidato con Image 2 usando `purpose=logo`, adjuntarlo y revisarlo. Guardar su archivo como oficial solo después de la aprobación natural del comprador.
    - Preguntar activamente si el cliente quiere subir un logo, diseño de referencia, foto de producto, fundador, cliente, local o empaque.
+   - Si comparte uno o varios diseños de referencia, preguntar qué elementos exactos quiere reutilizar de cada uno: paleta, tipografía, composición, fotografía, iconografía, espaciado, energía u otra característica concreta.
    - Proponer estilos, paletas, fuentes, sensaciones, uso de logo y reglas visuales solo después de escuchar esas respuestas.
    - Distinguir que es continuo para toda la marca y que cambia por producto, servicio o campana.
    - Revisar `brand_guides/Offer map.md` antes de crear creativos para no mezclar una oferta nueva con la oferta principal guardada.
@@ -12747,7 +12974,7 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
    - Guardar la guia general con `save_brand_guide` y fichas por producto con `save_product_guide`.
 
 4. organic_content_strategy
-   - Solo después del branding confirmado, leer `skills/organic-content-strategy/SKILL.md` y proponer una estrategia concreta: pilares, temas, mezcla de contenido, frecuencia y por qué sirve al objetivo.
+   - Solo después del branding completo y de la revisión final aprobada, leer `skills/organic-content-strategy/SKILL.md` y proponer una estrategia concreta: pilares, temas, mezcla de contenido, frecuencia y por qué sirve al objetivo.
    - Explicar que cada pieza real de Image 2 se adjunta primero por Telegram para revisión; nada visible se publica sin aprobación.
    - Guardar la decisión y cadencia con `save_daily_social_content_settings`.
 
@@ -12806,11 +13033,12 @@ La marca madre incluye:
 
 1. Leer memoria existente: `brand_guides/general_branding.md`, `brand_guides/Offer map.md`, `brand_guides/creative_references.md` y `memory/content_asset_library.json`.
 2. Si falta branding esencial, no crear contenido ni anuncios finales todavía. Preguntar una cosa: logo, colores, referencias, fotos/assets reales, tono o estilo.
+   - Cuando haya una referencia, preguntar qué elementos exactos quiere conservar de ella (por ejemplo paleta, tipografía, composición, fotografía, iconografía, espaciado o energía). No asumir que desea copiar toda la referencia.
 3. Si el comprador necesita logo, usar Image 2 con `purpose=logo` después de acordar nombre, oferta/categoría, paleta, estilo y tono. Adjuntar el resultado real, revisarlo juntos y guardarlo como oficial únicamente tras su aprobación natural. Un bloqueo no es una cola: nunca decir que aparecerá luego.
 4. Guardar marca madre con `save_brand_guide` / `mcp_admira_save_brand_memory`.
 5. Guardar assets subidos con `save_content_asset` / `mcp_admira_save_content_asset` y una categoría clara.
 6. Guardar referencias aprobadas con `save_creative_references`.
-7. Cuando el branding esté confirmado, pasar a contenido orgánico y después a ofertas/campañas. No sobrescribir la marca madre para resolver una nueva oferta.
+7. Cuando el branding esté completo, presentar recién entonces la revisión final consolidada del negocio + base de marca. Tras la confirmación del comprador, pasar a la propuesta estratégica, incluyendo la estrategia orgánica. No sobrescribir la marca madre para resolver una nueva oferta.
 
 ## Regla multi-oferta
 
@@ -12886,8 +13114,8 @@ Instrucciones para el agente:
 - Usa los links guardados como contexto, pero deja que el cliente corrija todo.
 - Documenta lo aprendido en el perfil del negocio y en las guias de marca/producto/brief cuando corresponda.
 - Si falta informacion, pregunta lo minimo necesario para poder actuar.
-- Cuando el perfil estratégico esté confirmado, usa primero `Branding onboarding.md` para definir y confirmar logo, colores, fuentes, tono, referencias y assets. Image 2 puede crear candidatos de logo/moodboard durante este trabajo, pero el archivo real debe mostrarse y aprobarse antes de guardarlo como oficial.
-- Solo después del branding, pasa a `skills/organic-content-strategy/SKILL.md`: propone pilares, ideas, frecuencia y revisión/aprobación por Telegram antes de publicar.
+- Cuando los temas del perfil estratégico estén completos pero todavía esperen revisión final, usa primero `Branding onboarding.md` para definir logo, colores, fuentes, tono, referencias y assets. Image 2 puede crear candidatos de logo/moodboard durante este trabajo, pero el archivo real debe mostrarse y aprobarse antes de guardarlo como oficial.
+- Solo después de completar branding presenta una revisión final consolidada; tras su aprobación pasa a `skills/organic-content-strategy/SKILL.md`: propone pilares, ideas, frecuencia y revisión/aprobación por Telegram antes de publicar.
 - Si el cliente menciona una nueva oferta, servicio, paquete o promocion despues del onboarding, no lo guardes encima de la marca general. Trátalo como oferta hija y usa/crea `brand_guides/products/` y, si aplica, `brand_guides/ad_briefs/`.
 - Si el cliente comparte archivos, fotos, videos, links, testimonios, ofertas o referencias, pregunta/infiera para que son y guardalos con `save_content_asset` para que se puedan reutilizar en posts, anuncios o estrategia.
 - Despues de branding, pregunta por anuncios/campanas anteriores y guarda aprendizajes antes de proponer la estrategia inicial.
@@ -13126,6 +13354,8 @@ def save_business_context(payload):
         if review_requested:
             review_readiness = strategic_profile_readiness(strategic, active_page_id=page_id)
             if not review_readiness.get("complete") and not review_readiness.get("onboarding_completed"):
+                if not _foundation_review_matches(strategic):
+                    raise ValueError("Primero completa y presenta la revisión actual de negocio y branding.")
                 natural_confirmation, _confirmation_reason = _lifecycle_confirmation(
                     "business_profile",
                     business_profile_review_summary(strategic),
@@ -13250,12 +13480,13 @@ def save_business_context(payload):
                 )
                 valid_confirmation_boundary = bool(
                     strategic_state.get("complete")
-                    and _master_plan_is_complete(current.get("draft"))
+                    and _master_plan_record_is_complete(current)
                     and _plan_presentation_matches_current_draft(current)
                     and later_bound
                 )
                 if semantic_ok and valid_confirmation_boundary:
                     current = {
+                        "schema_version": int(current.get("schema_version") or (2 if current.get("draft", {}).get("organic_content_strategy") else 1)),
                         "status": "confirmed",
                         "revision": int(current.get("revision") or 0) + 1,
                         "profile_revision": int(strategic_state.get("revision") or 0),
@@ -13265,6 +13496,8 @@ def save_business_context(payload):
                         "draft": {},
                         "draft_hash": str(current.get("draft_hash") or ""),
                     }
+                    if current["content"].get("organic_content_strategy"):
+                        CONTENT_STRATEGY_FILE.write_text("# Content strategy\n\n" + current["content"]["organic_content_strategy"] + "\n\n" + current["content"].get("organic_daily_plan", ""), encoding="utf-8")
                     plan_operation_reason = "strategic_plan_confirmed"
                 else:
                     plan_operation_reason = "strategic_plan_confirmation_not_bound"
@@ -13301,7 +13534,7 @@ def save_business_context(payload):
         if not trusted_buyer_confirmation:
             result["reason"] = authorization.get("reason") or "buyer_confirmation_not_authorized"
             result["reply"] = "Se conservó como borrador; no se convirtió en un hecho confirmado porque faltó evidencia del turno actual o ya se había usado."
-        if readiness.get("review_required"):
+        if readiness.get("review_required") and branding_creatives_status() == "completed":
             result["review_summary"] = business_profile_review_summary(strategic)
         return result
 
@@ -14049,6 +14282,22 @@ def _eligible_style_reference(item, required_approval):
     )
 
 
+def _eligible_explicit_structure_reference(item):
+    # Research influence is separate from permission to publish/reuse the source.
+    if not isinstance(item, dict):
+        return False
+    from competitor_research import canonical_ad_library_url
+    try:
+        canonical_ad_library_url(item.get("source_reference_url"))
+    except ValueError:
+        return False
+    return bool(item.get("category") == "style_reference"
+                and item.get("reference_scope") == "task"
+                and item.get("reference_role") == "competitor_structure"
+                and item.get("preservation_mode") == "style_only"
+                and item.get("classification_status") == "classified")
+
+
 def _creative_style_references(payload, by_id, purpose="ad_creative"):
     """Resolve task-specific and persistent brand design references.
 
@@ -14078,13 +14327,13 @@ def _creative_style_references(payload, by_id, purpose="ad_creative"):
         explicit_item = by_id.get(str(policy.get("asset_id") or "").strip())
         explicit_paths = (
             safe_image_paths({"image_paths": explicit_item.get("file_paths") or []}, limit=1)
-            if _eligible_style_reference(explicit_item, required_approval)
+            if (_eligible_style_reference(explicit_item, required_approval) or _eligible_explicit_structure_reference(explicit_item))
             else []
         )
         if not explicit_paths and policy.get("file_path"):
             requested = str(Path(str(policy.get("file_path")).strip()).resolve())
             for candidate_item in by_id.values():
-                if not _eligible_style_reference(candidate_item, required_approval):
+                if not (_eligible_style_reference(candidate_item, required_approval) or _eligible_explicit_structure_reference(candidate_item)):
                     continue
                 paths = safe_image_paths({"image_paths": candidate_item.get("file_paths") or []}, limit=8)
                 if any(str(Path(path).resolve()) == requested for path in paths):
@@ -14119,7 +14368,7 @@ def _creative_style_references(payload, by_id, purpose="ad_creative"):
         exact_selected = []
         for asset_id in [str(value or "") for value in required_asset_ids]:
             item = by_id.get(asset_id)
-            if not _eligible_style_reference(item, required_approval):
+            if not (_eligible_style_reference(item, required_approval) or _eligible_explicit_structure_reference(item)):
                 raise ValueError("Una referencia de estilo requerida por el reintento ya no está aprobada o disponible.")
             paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=1)
             if not paths:
@@ -14147,6 +14396,7 @@ def _creative_style_references(payload, by_id, purpose="ad_creative"):
         "task_asset_ids": task_asset_ids,
         "reference_count": len(selected),
         "policy_supplied": policy_supplied,
+        "structure_only_asset_ids": [asset_id for asset_id in asset_ids if _eligible_explicit_structure_reference(by_id.get(asset_id))],
     }
 
 
@@ -14592,6 +14842,8 @@ def codex_image_generate(payload):
             if layout == "before_after" and {s.get("role") for s in slots} != {"before", "after"}:
                 raise ValueError("layout_intent=before_after requiere exactamente una foto con role=before y otra con role=after.")
             library = guide_library()
+            if style_evidence.get("structure_only_asset_ids"):
+                request += "\nCOMPETITOR REFERENCE: angle and structure only. Use the buyer brand references and written guide for all palette, typography and identity; never copy competitor photos, people, logos, claims or text.\n"
             semantic_context = _hybrid_semantic_prompt_context(payload, library, selected_product=product_guide)
             text_content = semantic_context["text_content"]
             brand_fields = (library.get("general") or {}).get("fields") or {}
@@ -14810,6 +15062,8 @@ def codex_image_generate(payload):
         for path in style_reference_paths:
             if path not in reference_paths:
                 reference_paths.append(path)
+        if style_reference_evidence.get("structure_only_asset_ids"):
+            image_prompt += "\nCOMPETITOR REFERENCE: use ONLY its conceptual angle and visual structure. Never borrow its palette, typography, branding, text, photos or people. The other brand references and approved written brand guide define identity.\n"
         if style_reference_paths:
             image_prompt += (
                 "\nCONTRATO DE REFERENCIAS VISUALES: las imágenes de estilo adjuntas sirven solo para "
@@ -15055,6 +15309,12 @@ def store_brand_logo_bytes(raw, ext, original_name="logo"):
     digest = hashlib.sha256(raw).hexdigest()[:10]
     target = BRAND_ASSET_DIR / f"{slug[:34]}-{digest}{ext}"
     target.write_bytes(raw)
+    processed = extract_logo_background_to_transparency(
+        target,
+        target.with_name(f"{target.stem}-transparent.png"),
+    )
+    if processed.get("ok") and (processed.get("background_removed") or processed.get("already_transparent")):
+        return product_reference(Path(processed.get("path") or target))
     return product_reference(target)
 
 
@@ -20174,6 +20434,22 @@ def handle_save_content_asset_tool(arguments, chat_payload, tool):
     return agent_action_result(tool, True, message, result=result)
 
 
+def handle_capture_ad_library_reference_tool(arguments, chat_payload, tool):
+    from competitor_research import capture_public_ad_reference
+    result = capture_public_ad_reference(arguments, output_dir=DATA_DIR / "uploads" / "public_ad_references")
+    return agent_action_result(tool, bool(result.get("ok")), "Referencia pública." if result.get("ok") else "No pude verificar la referencia pública hoy.", result=result)
+
+
+def handle_search_content_assets_tool(arguments, chat_payload, tool):
+    result = search_content_asset_memory(arguments)
+    count = int(result.get("count") or 0)
+    if chat_lang(chat_payload) == "es":
+        message = f"Encontré {count} asset(s)/creativo(s) guardados que coinciden."
+    else:
+        message = f"I found {count} saved asset(s)/creative(s) that match."
+    return agent_action_result(tool, True, message, result=result)
+
+
 def handle_record_verified_signal_tool(arguments, chat_payload, tool):
     payload = dict(arguments or {})
     if isinstance(payload.get("items"), list):
@@ -21006,6 +21282,10 @@ AGENT_TOOL_HANDLERS = {
     "save_daily_social_content_settings": handle_save_daily_social_content_settings_tool,
     "stage_organic_social_post": handle_stage_organic_social_post_tool,
     "save_content_asset": handle_save_content_asset_tool,
+    "search_content_assets": handle_search_content_assets_tool,
+    "capture_ad_library_reference": handle_capture_ad_library_reference_tool,
+    "get_meta_history_context": lambda arguments, chat_payload, tool: agent_action_result(tool, True, "Contexto histórico anual.", result=get_meta_history_context(arguments)),
+    "record_organic_content_proposal": lambda arguments, chat_payload, tool: agent_action_result(tool, True, "Propuesta guardada en el historial.", result=record_organic_content_proposal(arguments)),
     "record_verified_signal": handle_record_verified_signal_tool,
     "get_verified_signal_summary": handle_get_verified_signal_summary_tool,
     "verified_signal_feedback_prompt": handle_verified_signal_feedback_prompt_tool,
@@ -21629,6 +21909,84 @@ HTML = r"""<!DOCTYPE html>
 """
 
 
+def fetch_annual_campaign_history(account_id, *, since, until):
+    # Historical Insights must not be filtered by today's manageable inventory:
+    # archived/deleted campaigns can still explain the past year's performance.
+    from meta_insights import fetch_insights
+    config = load_config()
+    if not config.meta_access_token:
+        return {"ok": False, "reason": "missing_token"}
+    result = fetch_insights(account_id, config.meta_access_token, config.meta_graph_api_version or "v24.0",
+                            date_preset="custom", level="campaign", time_increment="all_days",
+                            time_range={"since": since, "until": until})
+    return {"ok": bool(result.get("ok")), "partial": bool(result.get("partial")), "account_id": account_id,
+            "metrics": {"account_id": account_id, "campaigns": result.get("rows") or [],
+                        "metrics_range": {"since": since, "until": until},
+                        "inventory_semantics": "historical_insights_not_current_status"}}
+
+
+def get_meta_history_context(payload=None, *, background=False, reserved=False):
+    from meta_history_cache import history_context, launch_refresh
+    payload = dict(payload or {})
+    account = current_configured_ad_account_id()
+    page = active_meta_page_id()
+    oauth = read_json(META_OAUTH_CONNECTION_FILE, {})
+    account_timezone = next((str(item.get("timezone_name") or "UTC") for item in oauth.get("accounts", [])
+                             if str(item.get("id") or item.get("account_id") or "").removeprefix("act_") == str(account).removeprefix("act_")), "UTC")
+    return history_context(
+        DATA_DIR, account, page,
+        refresh=not background,
+        fetch=fetch_annual_campaign_history,
+        account_timezone=account_timezone,
+        reserved=reserved,
+        launch=(lambda account_id, page_id: launch_refresh(ROOT_DIR, account_id, page_id)) if background else None,
+        campaign_id=str(payload.get("campaign_id") or ""),
+        offset=max(0, int(payload.get("offset") or 0)),
+        limit=max(1, min(50, int(payload.get("limit") or 25))),
+    )
+
+
+AGENT_LIVE_META_DATE_PRESET = "last_30d"
+
+
+def agent_turn_dashboard_state(reason="agent_turn_live_context"):
+    """Return server-owned agent context grounded in a fresh bounded Meta read."""
+    state = dashboard_payload()
+    live = refresh_managed_real_metrics(
+        reason=reason,
+        date_preset=AGENT_LIVE_META_DATE_PRESET,
+        persist=False,
+        include_breakdowns=False,
+    )
+    live_metrics = live.get("metrics") if isinstance(live, dict) else None
+    if isinstance(live_metrics, dict):
+        state["metrics"] = live_metrics
+        campaigns = live_metrics.get("campaigns", [])
+        recommendations = calculate_recommendations(campaigns)
+        fatigue = fatigue_items(campaigns)
+        state["recommendations"] = recommendations
+        state["fatigue"] = fatigue
+        state["decision_memory"] = decision_memory_payload(live_metrics, recommendations, fatigue)
+        state["experiment_reviews"] = experiment_review_payload(live_metrics)
+        state["brief"] = scheduled_brief_or_live(
+            live_metrics,
+            recommendations,
+            state.get("business_profile") if isinstance(state.get("business_profile"), dict) else {},
+        )
+    state["meta_history"] = get_meta_history_context(background=True)
+    state["live_meta_sync"] = {
+        "attempted": True,
+        "ok": bool(isinstance(live, dict) and live.get("ok")),
+        "partial": bool(isinstance(live, dict) and live.get("partial")),
+        "date_preset": AGENT_LIVE_META_DATE_PRESET,
+        "fetched_at": (live_metrics or {}).get("timestamp") if isinstance(live_metrics, dict) else "",
+        "rows": int((live or {}).get("rows") or 0) if isinstance(live, dict) else 0,
+        "reason": str((live or {}).get("reason") or "") if isinstance(live, dict) else "",
+        "category": str((live or {}).get("category") or "") if isinstance(live, dict) else "",
+    }
+    return state
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/oauth/status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
@@ -21942,19 +22300,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def post_chat(self, payload):
         chat_payload = dict(payload)
-        if chat_message_requires_live_meta_sync(payload.get("message")):
-            refresh_managed_real_metrics(reason="dashboard_chat_live_context")
-        dashboard = dashboard_payload()
+        dashboard = (
+            agent_turn_dashboard_state(reason="dashboard_chat_live_context")
+            if chat_message_requires_live_meta_sync(payload.get("message"))
+            else dashboard_payload()
+        )
         previous_history = load_chat_history()
         chat_payload["history"] = previous_history
-        chat_payload.setdefault("metrics", dashboard["metrics"])
-        chat_payload.setdefault("recommendations", dashboard["recommendations"])
-        chat_payload.setdefault("fatigue", dashboard["fatigue"])
-        chat_payload.setdefault("pending", dashboard["pending"])
-        chat_payload.setdefault("audience_strategy", dashboard["audience_strategy"])
-        chat_payload.setdefault("brand_guides", dashboard["brand_guides"])
-        chat_payload.setdefault("business_profile", dashboard.get("business_profile", {}))
-        chat_payload.setdefault("agent_onboarding_phase", dashboard.get("agent_onboarding_phase", {}))
+        chat_payload["metrics"] = dashboard["metrics"]
+        chat_payload["recommendations"] = dashboard["recommendations"]
+        chat_payload["fatigue"] = dashboard["fatigue"]
+        chat_payload["pending"] = dashboard["pending"]
+        chat_payload["audience_strategy"] = dashboard["audience_strategy"]
+        chat_payload["brand_guides"] = dashboard["brand_guides"]
+        chat_payload["business_profile"] = dashboard.get("business_profile", {})
+        chat_payload["agent_onboarding_phase"] = dashboard.get("agent_onboarding_phase", {})
+        chat_payload["live_meta_sync"] = dashboard.get("live_meta_sync", {})
+        chat_payload["meta_history"] = dashboard.get("meta_history", {})
         chat_payload.setdefault("channel", "dashboard")
         chat_result = route_chat_approval_decision(chat_payload)
         if not chat_result:

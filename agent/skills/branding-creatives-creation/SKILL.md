@@ -55,6 +55,7 @@ Use `mcp_admira_save_brand_memory` to save stable answers. Do not settle for vag
 - typography or lettering style
 - visual style, energy, proof, must-show, and must-avoid rules
 - whether reference designs exist; actively invite the buyer to upload one
+- for every reference the buyer wants to use, ask what exactly should carry forward: palette, typography, composition, photography treatment, iconography, spacing, energy, or another specific trait. Never assume the whole reference should be copied.
 - whether real product, founder, customer, location, packaging, or lifestyle photos exist; actively invite uploads
 - logo decision: official logo uploaded, no logo yet, or intentionally no logo
 - logo usage: always, sometimes, or never; preferred position and background treatment
@@ -62,6 +63,8 @@ Use `mcp_admira_save_brand_memory` to save stable answers. Do not settle for vag
 “I have no reference,” “I have no real photos,” and “I do not have a logo” are valid explicit decisions. Save them instead of repeatedly asking.
 
 If the buyer sends a logo, call `mcp_admira_save_brand_memory` while that image is attached, pass its safe workspace path in `reference_image_paths`, and clearly identify it as the official logo. Future creatives should use that exact saved file by default unless the buyer explicitly asks for no logo. Never recreate, reinterpret, trace, or replace an official logo.
+
+Before the final business/brand review, explicitly resolve the logo decision: uploaded official logo, approved newly generated logo, or an intentional decision to proceed without one. Also resolve colors, visual style, tone, reference usage, and whether real business assets are available. The final strategic proposal should not be triggered while these branding decisions are still pending.
 
 If the buyer asks to create a new logo, treat it as `purpose: "logo"`, present options, and wait for explicit approval. Only after approval save that exact generated file as the official logo. Never silently replace an existing official logo.
 

@@ -524,7 +524,7 @@ def send_pending_cards(config, chat_id, pending):
 
 def agent_payload(message, chat_id, language, image_paths=None):
     dashboard = load_dashboard_module()
-    state = dashboard.dashboard_payload()
+    state = dashboard.agent_turn_dashboard_state(reason="telegram_agent_live_context")
     oauth = dashboard.social_oauth_status()
     workspace_selected = bool(oauth.get("active_ad_account_id")) and bool(oauth.get("active_page_id"))
     return {
@@ -540,6 +540,8 @@ def agent_payload(message, chat_id, language, image_paths=None):
         "brand_guides": state.get("brand_guides", {}),
         "business_profile": state.get("business_profile", {}),
         "agent_onboarding_phase": state.get("agent_onboarding_phase", {}),
+        "live_meta_sync": state.get("live_meta_sync", {}),
+        "meta_history": state.get("meta_history", {}),
         "oauth_workspace": {
             "authorized": bool(oauth.get("connected")),
             "selection_required": bool(oauth.get("connected") and not workspace_selected),

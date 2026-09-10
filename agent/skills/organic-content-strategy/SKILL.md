@@ -28,6 +28,8 @@ The proposal must contain:
 - a practical cadence recommendation;
 - which posts Image 2 will design and when motion video would genuinely add clarity;
 - that every piece arrives in Telegram as a draft for review and nothing visible is published without approval.
+- a niche-specific daily mix rather than a universal template. For example, a local service business may benefit from education + one concrete service + proof/testimonial, while another niche may need a different mix. Choose the mix as the marketing expert.
+- a short explanation that the buyer can send real photos at any time for named content vaults. Until suitable real assets exist, daily concepts that need imagery use clearly generated visual material instead of pretending to use real business/customer photos.
 
 Use simple language. Facebook and branding are already ready before this strategy step, so the buyer may approve the plan or adjust it without another technical interruption. Then finish cadence setup. Never ask for a Meta token, System User, or app.
 
@@ -75,6 +77,17 @@ Recommended categories:
 
 Store the intended use in plain language: background, product proof, style direction, social post source, ad creative, testimonial, “do not use in ads,” etc.
 
+### Buyer-named content vaults
+
+Treat a vault as a logical collection inside the durable content-asset library, not as an ephemeral chat folder. When the buyer says “guarda esto en el vault de X”, preserve that intent in `vault_name`.
+
+- Examples: `casos de testimonios`, `fotos de sucursal del negocio`, `servicio: detailing premium`, `producto: serum vitamina C`.
+- If several files belong to one case/shoot, reuse the same `content_group`.
+- If two images in one message are explicitly “antes” and “después”, save/classify both, keep the same vault/group, and distinguish them with `visual_role=before` and `visual_role=after`. Do not flatten the pair into an unlabeled batch.
+- The buyer may add assets to these vaults at any time, outside onboarding. Classify and save them without restarting onboarding.
+- Real buyer-owned photos remain `pixel_locked` and are preferred when a future organic concept actually calls for that vault/category and the asset is approved for daily content.
+- If the relevant vault has no suitable approved real media, continue producing the organic proposal with AI-generated imagery. Never invent a real testimonial, real customer, real branch, real result, or real before/after.
+
 ## Content strategy
 
 Build 3–5 pillars before generating regular posts. Read `brand_guides/Offer map.md` and separate pillars by brand-wide themes and active child offers/products/services. Good defaults:
@@ -102,6 +115,30 @@ For each proposed post, include:
 - CTA;
 - asset used, if any;
 - why it fits the brand/business.
+
+### Rolling 15-day novelty memory
+
+Before preparing each recurring batch, read the last 15 days of `memory/organic_content_posts.json`. Compare at least: pillar, topic, offer/product/service, hook/headline, CTA, visual concept, asset/vault used, and format.
+
+- Avoid near-duplicate ideas inside that rolling window, even if the wording changes.
+- Repetition is a semantic judgment, not a keyword filter. A recurring pillar is expected; the underlying angle and execution should keep evolving.
+- Around days 12–15, an early successful/useful idea may be recycled when appropriate, but reframe it materially with a new hook, example, visual treatment, audience objection, proof point, format, or CTA.
+- Prefer novelty when a strong unused idea exists.
+
+## Daily competitor-inspired paid creative
+
+The recurring organic job also prepares one separate paid-ad candidate per day when public research can support it. This is not an organic post and must never be staged for organic publishing.
+
+1. Use web/browser research on Meta Ad Library for the buyer's niche/market, known competitors, or comparable businesses solving the same customer problem.
+2. Public evidence can show that an ad is active, repeated in variants, or apparently long-running. Treat those only as directional signals. Never claim Meta Ad Library reveals competitor CPA, ROAS, conversions, profitability, or a verified winner.
+3. Require an exact public Meta Ad Library URL plus a real visual reference for the chosen ad. If either cannot be verified, skip that day's competitor-derived candidate rather than inventing a source.
+4. Save/capture the public visual as a one-task `style_reference` with `preservation_mode=style_only`, `reference_scope=task`, and `approved_for_ads=false`. Store the exact source URL as provenance.
+5. Extract only the transferable concept: angle, hook structure, hierarchy, proof type, layout, pacing/format, and composition. Do not copy competitor branding, logo, palette, photos/people, exact copy, claims, phone, price, promotion, or identifying content.
+6. Generate an original paid-ad proposal through Image 2 with that task reference explicitly selected. Persistent `reference_scope=brand` references and the confirmed written brand guide remain attached and authoritative. Competitor inspiration controls only the day's angle/structure.
+7. Deliver the generated image plus the exact Ad Library link and explain the observed public signal without claiming private performance.
+8. Archive the generated file as `category=competitor_inspired_creative`, vault `propuestas competitivas para paid ads`, `creative_candidate_status=proposed`, `approved_for_ads=false`, and persist `source_reference_url`, source label, angle, structure, and observation date.
+9. If the buyer later asks to save/use it for paid ads, search the exact candidate with `mcp_admira_search_content_assets` and update the same durable file to `approved_for_ads=true`, `creative_candidate_status=saved_for_paid`. That explicit request promotes the candidate; the daily cron never does.
+10. Retrieval requests such as “muéstrame los creativos guardados basados en competencia” should use `mcp_admira_search_content_assets`, not the short three-day generated-creative recovery window.
 
 ## Image 2 production
 
@@ -146,3 +183,8 @@ If the buyer requests changes, generate/revise the piece and stage a new exact d
 The first supported direct destination is the connected Facebook Page. Do not promise Instagram direct publishing unless a product tool explicitly confirms it.
 
 Present the feature as “posts listos para aprobar” or “tu calendario de contenido diario”, not as a technical cron job.
+
+## Unified strategy activation
+When the confirmed strategic plan contains organic_content_strategy and organic_daily_plan, that same acceptance approves the organic direction. Persist its exact strategy and cadence through mcp_admira_save_daily_social_content_settings with enabled=true; ask only for a genuinely missing delivery preference. Use the account timezone and the configured delivery time when no different time was requested. Never ask for a second approval of the same strategy. Recurring delivery is distinct from publishing each post on Meta.
+
+Record every delivered proposal with mcp_admira_record_organic_content_proposal even when direct publishing is disconnected. Record pillar, topic, offer, hook, CTA, visual concept, format and vault/asset IDs, not just published posts.

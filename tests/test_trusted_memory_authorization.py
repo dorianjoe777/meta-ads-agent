@@ -24,6 +24,9 @@ def load_dashboard():
 class TrustedMemoryAuthorizationTests(unittest.TestCase):
     def setUp(self):
         self.dashboard = load_dashboard()
+        brand_status = patch.object(self.dashboard, "branding_creatives_status", return_value="completed")
+        brand_status.start()
+        self.addCleanup(brand_status.stop)
         self.temp = tempfile.TemporaryDirectory()
         data = Path(self.temp.name)
         self.patches = [
@@ -569,11 +572,13 @@ class TrustedMemoryAuthorizationTests(unittest.TestCase):
             self.dashboard.ensure_canonical_strategic_review_visible(visible),
             visible,
         )
-        self.assertEqual(
+        # Completed foundation, never presented: state triggers its single review
+        # without depending on specific words in the model's response.
+        self.assertIn(
+            "Resumen del negocio — revisión",
             self.dashboard.ensure_canonical_strategic_review_visible(
                 "Sigamos con la pregunta sobre capacidad."
             ),
-            "Sigamos con la pregunta sobre capacidad.",
         )
 
 

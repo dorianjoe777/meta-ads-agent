@@ -84,7 +84,8 @@ class BusinessLifecycleBackendTests(unittest.TestCase):
         profile = self.dashboard.embed_strategic_profile({}, strategic)
         self.dashboard.write_json(self.dashboard.BUSINESS_PROFILE_FILE, profile)
         text = "Resumen estratégico de Rodeo. ¿Confirmas estos datos?"
-        output = self.dashboard.ensure_canonical_strategic_review_visible(text)
+        with patch.object(self.dashboard, "branding_creatives_status", return_value="completed"):
+            output = self.dashboard.ensure_canonical_strategic_review_visible(text)
         self.assertIn("Resumen del negocio — revisión", output)
         self.assertNotIn("Resumen estratégico de Rodeo", output)
 

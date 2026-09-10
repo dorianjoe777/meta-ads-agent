@@ -49,7 +49,9 @@ A design reference is subordinate to confirmed brand memory and the active offer
 
 When the buyer uploads or links a reusable asset, save its purpose with `mcp_admira_save_content_asset` so future posts/ads can reuse it correctly after history cleanup. Telegram archives every inbound image to durable product storage first as `pending_agent_review`; analyze the entire batch with vision and then classify every file. Group files only when they truly share the same category/purpose. Do not leave a batch pending after telling the buyer it was organized.
 
-Categories to use: `official_logo`, `product`, `location`, `team_founder`, `customer_testimonial`, `ugc`, `style_reference`, `offer_promo`, `social_proof`, `do_not_use`, or `other`.
+Categories to use: `official_logo`, `product`, `location`, `team_founder`, `customer_testimonial`, `ugc`, `style_reference`, `offer_promo`, `social_proof`, `competitor_inspired_creative`, `do_not_use`, or `other`.
+
+Use `mcp_admira_search_content_assets` for durable retrieval by category/vault/provenance, especially when the buyer asks for older competitor-inspired candidates. A generated `competitor_inspired_creative` may be archived with `approved_for_ads=false`; only an explicit later buyer request should promote that exact file to `approved_for_ads=true`.
 
 If the purpose is unclear, ask one short question before saving: “¿Esto lo uso como logo oficial, foto real, referencia de estilo, prueba social, UGC, oferta, o prefieres que no lo use?”
 

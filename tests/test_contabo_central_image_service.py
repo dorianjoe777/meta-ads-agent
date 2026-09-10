@@ -263,7 +263,7 @@ class CentralImageServiceTests(unittest.TestCase):
         )
         result = broker.submit(sign_compiler_request(self.key, {
             "tenant_id": "tenant-one", "request_id": "strategy-001",
-            "purpose": "campaign_compile", "tool": "admira_prepare_strategic_plan",
+            "purpose": "campaign_compile", "tool": "admira_prepare_integrated_strategic_plan",
             "prompt": "Prepare a proposal from confirmed facts", "timeout_seconds": 90,
         }))
         self.assertTrue(result["ok"])
@@ -271,6 +271,14 @@ class CentralImageServiceTests(unittest.TestCase):
         pool.compile.assert_called_once_with(
             "Prepare a proposal from confirmed facts", strategic_plan_schema(), timeout=90,
         )
+
+    def test_legacy_tenants_keep_the_five_field_strategy_contract(self):
+        legacy = central_campaign_compiler_schema("admira_prepare_strategic_plan")
+        integrated = central_campaign_compiler_schema("admira_prepare_integrated_strategic_plan")
+        self.assertEqual(len(legacy["required"]), 5)
+        self.assertNotIn("organic_content_strategy", legacy["properties"])
+        self.assertEqual(len(integrated["required"]), 7)
+        self.assertIn("organic_daily_plan", integrated["properties"])
 
     def test_compiler_socket_signs_entitlement_and_returns_only_structured_output(self):
         compiler_broker = CampaignCompilerBroker(

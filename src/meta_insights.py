@@ -241,7 +241,7 @@ def graph_rows(path, params, token, version="v24.0", max_pages=5):
         next_url = str((payload.get("paging") or {}).get("next") or "")
         if not next_url:
             break
-    return {"ok": True, "rows": rows, "error": None}
+    return {"ok": True, "rows": rows, "error": None, "partial": bool(next_url)}
 
 
 def normalize_insight_row(row, level):

@@ -37,6 +37,7 @@ TIMEOUT_RESPONSE_RESERVE_SECONDS = 5
 MODEL = "gpt-5.6-terra"
 TOOLS = {
     "admira_prepare_strategic_plan",
+    "admira_prepare_integrated_strategic_plan",
     "admira_create_whatsapp_campaign",
     "admira_create_lead_form_campaign",
     "admira_create_website_campaign",

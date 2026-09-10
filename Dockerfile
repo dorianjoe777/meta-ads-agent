@@ -47,6 +47,19 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts \
     && npx remotion browser ensure
 
+# Browser research is available in the immutable image, including unattended
+# daily turns. Never rely on npx installing a moving dependency in a tenant.
+ARG AGENT_BROWSER_VERSION=0.20.0
+ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/admira-browser/chrome \
+    AGENT_BROWSER_IDLE_TIMEOUT_MS=60000
+RUN npm install -g "agent-browser@${AGENT_BROWSER_VERSION}" \
+    && mkdir -p /opt/admira-browser \
+    && browser_binary="$(find /app/node_modules/.remotion -type f -name chrome-headless-shell -perm /111 -print -quit)" \
+    && test -n "$browser_binary" \
+    && ln -s "$browser_binary" /opt/admira-browser/chrome \
+    && agent-browser --session build-check --json open about:blank \
+    && agent-browser --session build-check --json close
+
 # Release-specific metadata belongs after the expensive, version-independent
 # dependency layers.  A new rXX/SHA must rebuild the source/provenance layers,
 # but must not reinstall the OS, Hermes, Codex, Python and browser toolchains.

@@ -1,5 +1,7 @@
 """Small shared helpers for local JSON state files."""
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,3 +38,21 @@ def write_private_json(path, payload, *, ensure_ascii=True, indent=2):
         Path(path).chmod(0o600)
     except OSError:
         pass
+
+
+def atomic_write_json(path, payload):
+    """Replace shared cache/ledger state without exposing a half-written JSON."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="." + path.name + ".", delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)

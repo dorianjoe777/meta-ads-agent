@@ -30,7 +30,10 @@ _WRITE_LOCK = threading.Lock()
 
 
 TOOL_DEFINITIONS = [
-    ("get_real_meta_context", "Synchronize directly with Meta and read the current campaign/ad set/ad inventory plus performance context. Supports date_preset=maximum|today|last_7d|custom, custom since/until dates, and detail_level=standard|deep; deep includes placement/device, age/gender and country breakdowns. Read-only transient Graph failures are retried once. Inspect live_sync.connection and live_sync.error_details: if connection.reachable=true, do not claim Meta is disconnected or the token expired. Preserve code, subcode and fbtrace_id for support. Treat local memory and approvals only as candidate workflow context: they never prove what currently exists or runs in Meta, and a failed/incomplete empty response never proves the account has no campaigns."),
+    ("capture_ad_library_reference", "Capture a real public visual from one exact verified Meta Ad Library ad URL. Inspect returned screenshot before saving it as a task-scoped competitor_structure reference. Login/challenge/unavailable pages fail without inventing a creative."),
+    ("get_meta_history_context", "Read annual cached campaign KPIs and paginate historical campaign detail. TTL 6 hours; live last_30d always takes priority. Includes as_of and freshness, never pretends cached history is current."),
+    ("record_organic_content_proposal", "Record one organic design proposal and its semantic concept in durable 15-day novelty memory, even when publishing is unavailable. Never publishes."),
+    ("get_real_meta_context", "Synchronize directly with Meta and read the current campaign/ad set/ad inventory plus performance context. Supports date_preset=maximum|today|last_7d|last_30d|custom, custom since/until dates, and detail_level=standard|deep; deep includes placement/device, age/gender and country breakdowns. Read-only transient Graph failures are retried once. Inspect live_sync.connection and live_sync.error_details: if connection.reachable=true, do not claim Meta is disconnected or the token expired. Preserve code, subcode and fbtrace_id for support. Treat local memory and approvals only as candidate workflow context: they never prove what currently exists or runs in Meta, and a failed/incomplete empty response never proves the account has no campaigns."),
     ("start_meta_oauth_connection", "Send the buyer a short-lived secure Facebook OAuth URL as ordinary visible text in their connected Telegram chat. Use as the first technical setup step when get_meta_oauth_workspaces says Facebook is not connected. Never depend on an inline button. Do not ask for a Meta token, System User, or app. This is setup only and never spends money."),
     ("get_meta_oauth_workspaces", "List the buyer's Facebook OAuth connection plus every publishable Page and ad account it discovered. Tokens are never returned. Present Pages first and ad accounts second as ordinary numbered chat text, never through clarify or a choice card. Ask for exactly two bare numbers: Page first, ad account second (example: 1, 8)."),
     ("select_meta_oauth_workspace", "Persist the exact Page/ad-account pair authorized by the buyer's latest strict numeric reply. The only accepted buyer format is two bare numbers in the displayed order: Page first, ad account second. Names, confirmations, partial choices, recommendations, budgets, or model-supplied IDs do not authorize selection. Success includes selected=true and verified_persisted=true after durable backend read-back."),
@@ -73,7 +76,8 @@ TOOL_DEFINITIONS = [
     ("save_agent_preferences", "Save global operator preferences, including simple/technical wording and the buyer's ads-management experience level."),
     ("save_daily_social_content_settings", "Save the buyer's one-time organic-content decision and, only when branding plus a concrete content strategy are ready, enable or update the recurring organic content cron in the buyer timezone. The strategy may allow images, motion videos, or an adaptive mix. An early yes is saved as accepted_pending_setup instead of starting an unprepared cron."),
     ("stage_organic_social_post", "Create an exact approval draft for one finished organic Facebook piece. Requires one final generated image or motion video, exact caption, connected Page, and Publicación directa. This never publishes immediately; explicit buyer approval publishes that exact media and caption as a visible Page post/video."),
-    ("save_content_asset", "Durably save and classify a buyer-shared file, image batch, video link, frame set, or reference for future posts, ads, and strategy. Use preservation_mode=pixel_locked for buyer-owned real photos/logos, style_only for inspiration, pending_classification while unclear, and prohibited for do-not-use assets. A style_reference defaults to reference_scope=task and applies only when explicitly selected for the current creative. Set reference_scope=brand only when the buyer shared or approved it as durable branding direction; brand-scoped references are then attached to every later creative. Telegram images are pre-archived pending review; that archival status must be resolved by vision plus this MCP whenever the current buyer turn assigns the files a use. For a creative request, classify the entire attached batch before calling mcp_admira_codex_image_generate, return/use the durable asset IDs, and keep the exact order/roles (hero, before, after, service, collage_item) in the next hybrid call's real_media array. Do not invent a keyword filter or ask an extra approval merely to classify an already clearly assigned photo."),
+    ("save_content_asset", "Durably save and classify a buyer-shared file, image batch, video link, frame set, reference, or agent-generated creative candidate for future posts, ads, and strategy. Use preservation_mode=pixel_locked for buyer-owned real photos/logos and finished generated candidate creatives, style_only for inspiration, pending_classification while unclear, and prohibited for do-not-use assets. A style_reference defaults to reference_scope=task and applies only when explicitly selected for the current creative. Set reference_scope=brand only when the buyer shared or approved it as durable branding direction; brand-scoped references are then attached to every later creative. Competitor-inspired generated candidates must remain approved_for_ads=false until the buyer explicitly asks to save/use that candidate for paid ads. Telegram images are pre-archived pending review; that archival status must be resolved by vision plus this MCP whenever the current buyer turn assigns the files a use. For a creative request, classify the entire attached batch before calling mcp_admira_codex_image_generate, return/use the durable asset IDs, and keep the exact order/roles (hero, before, after, service, collage_item) in the next hybrid call's real_media array. Do not invent a keyword filter or ask an extra approval merely to classify an already clearly assigned photo."),
+    ("search_content_assets", "Search the durable content/creative library by free text, vault, category, source provenance, product scope, or paid-ad approval state. Use this when the buyer asks to retrieve previously saved competitor-inspired creative candidates, real photos, testimonials, branch photos, product/service assets, or other durable media."),
     ("record_verified_signal", "Save a local verified-signal ledger event or batch: fake/not interested/wrong audience, qualified, booked, showed, purchased, or high-value outcomes. Does not send to Meta."),
     ("get_verified_signal_summary", "Read the local verified-signal ledger summary: stages, open follow-ups, match/privacy readiness, and recent records."),
     ("verified_signal_feedback_prompt", "Generate the daily exception/outcome feedback prompt for verified-signal mode."),
@@ -124,6 +128,9 @@ def _strings(description):
 # aliases open for backwards compatibility, but make the canonical contract
 # explicit for the high-value memory, creative, and campaign tools.
 TOOL_INPUT_SCHEMAS = {
+    "capture_ad_library_reference": {"type": "object", "properties": {"source_reference_url": _string("Exact public Meta Ad Library ad URL, including id.")}, "required": ["source_reference_url"], "additionalProperties": False},
+    "get_meta_history_context": {"type": "object", "properties": {"campaign_id": _string("Exact historical campaign id, optional."), "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False},
+    "record_organic_content_proposal": {"type": "object", "properties": {key: _string(key) for key in ("draft_id", "caption", "image_path", "video_path", "pillar", "topic", "offer", "hook", "cta", "visual_concept", "format", "vault_name", "content_group")}, "required": ["caption"], "additionalProperties": True},
     "start_meta_oauth_connection": {"type": "object", "additionalProperties": False, "properties": {}},
     "get_meta_oauth_workspaces": {"type": "object", "additionalProperties": False, "properties": {}},
     "select_meta_oauth_workspace": {
@@ -134,7 +141,7 @@ TOOL_INPUT_SCHEMAS = {
     "get_real_meta_context": {
         "type": "object", "additionalProperties": True,
         "properties": {
-            "date_preset": _string("maximum, today, last_7d, or custom.", enum=("maximum", "today", "last_7d", "custom")),
+            "date_preset": _string("maximum, today, last_7d, last_30d, or custom.", enum=("maximum", "today", "last_7d", "last_30d", "custom")),
             "since": _string("YYYY-MM-DD start date when date_preset=custom."),
             "until": _string("YYYY-MM-DD end date when date_preset=custom."),
             "detail_level": _string("standard or deep live inventory/insight detail.", enum=("standard", "deep")),
@@ -188,10 +195,27 @@ TOOL_INPUT_SCHEMAS = {
             "urls": _strings("Public asset URLs that share this classification."),
             "category": _string(
                 "Confirmed asset category. Use other only while genuinely pending review.",
-                enum=("official_logo", "product", "location", "team_founder", "customer_testimonial", "ugc", "offer_promo", "social_proof", "brand_graphic_element", "motion_graphic_element", "story_element", "decorative_element", "style_reference", "do_not_use", "other"),
+                enum=("official_logo", "product", "location", "team_founder", "customer_testimonial", "ugc", "offer_promo", "social_proof", "competitor_inspired_creative", "brand_graphic_element", "motion_graphic_element", "story_element", "decorative_element", "style_reference", "do_not_use", "other"),
             ),
             "purpose": _string("What the buyer said this asset is for and how it may be used."),
             "notes": _string("Useful visual/context notes for future content and campaign work."),
+            "vault_name": _string(
+                "Buyer-facing logical vault/collection name for future reuse, for example 'casos de testimonios', "
+                "'fotos de sucursal del negocio', or 'servicio: detailing premium'. Preserve the buyer's intended grouping."
+            ),
+            "content_group": _string(
+                "Optional stable group label tying related assets together, for example one before/after case or one product shoot."
+            ),
+            "reference_role": _string("competitor_structure for public research used only as explicit task angle/structure reference."),
+            "source_reference_url": _string("Exact public source URL that informed this asset/candidate, such as a verified Meta Ads Library ad URL."),
+            "source_reference_label": _string("Human-readable source label, such as competitor/Page name."),
+            "inspiration_angle": _string("Strategic angle extracted from the public reference; never a claim of private CPA/ROAS/conversions."),
+            "inspiration_structure": _string("Visible creative structure/pattern to adapt without copying competitor branding, logo, text, people, or protected content."),
+            "research_observed_at": _string("ISO timestamp/date when the public reference was observed."),
+            "creative_candidate_status": _string(
+                "Lifecycle for competitor-inspired generated candidates.",
+                enum=("proposed", "saved_for_paid", "rejected"),
+            ),
             "preservation_mode": _string(
                 "pixel_locked for buyer-owned real photos/logos; style_only for inspiration; pending_classification if unclear; prohibited when it must not be used.",
                 enum=("pixel_locked", "style_only", "pending_classification", "prohibited"),
@@ -214,6 +238,20 @@ TOOL_INPUT_SCHEMAS = {
             {"required": ["url"]},
             {"required": ["urls"]},
         ],
+    },
+    "search_content_assets": {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "asset_id": _string("Exact saved asset ID, optional."),
+            "approved_for_daily_content": _boolean("Optional daily approval filter."),
+            "product_scope": _string("Optional product/service scope."),
+            "query": _string("Free-text search across category, purpose, notes, vault, group, source label/URL, angle, structure, and product scope."),
+            "category": _string("Optional exact normalized category, e.g. competitor_inspired_creative."),
+            "vault_name": _string("Optional exact/partial buyer-facing vault name."),
+            "approved_for_ads": _boolean("Optional filter for paid-ad approval state."),
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        },
     },
     "record_verified_signal": {
         "type": "object", "additionalProperties": True,
@@ -664,12 +702,12 @@ TOOL_INPUT_SCHEMAS = {
     },
     "save_daily_social_content_settings": {
         "type": "object", "additionalProperties": True,
-        "properties": {"enabled": _boolean("Whether the buyer opted into recurring organic content."), "time": _string("Local delivery time HH:MM."), "timezone": _string("Buyer timezone."), "posts_per_day": {"type": "integer", "minimum": 1, "maximum": 6}, "frequency_days": {"type": "integer", "minimum": 1, "maximum": 30}, "platforms": _strings("Facebook and/or Instagram destinations."), "strategy_summary": _string("Confirmed organic content strategy, including its format mix."), "content_formats": _strings("Allowed production formats: image and/or motion_video. Use both for an adaptive mixed strategy."), "include_motion_video": _boolean("Convenience flag that adds motion_video to the allowed strategy formats."), "video_frequency_days": {"type": "integer", "minimum": 1, "maximum": 30, "description": "Minimum intended cadence between recurring motion-video pieces."}},
+        "properties": {"enabled": _boolean("Whether the buyer opted into recurring organic content."), "time": _string("Local delivery time HH:MM."), "timezone": _string("Buyer timezone."), "posts_per_day": {"type": "integer", "minimum": 1, "maximum": 5}, "frequency_days": {"type": "integer", "minimum": 1, "maximum": 30}, "platforms": _strings("Facebook and/or Instagram destinations."), "strategy_summary": _string("Confirmed organic content strategy, including its format mix."), "content_formats": _strings("Allowed production formats: image and/or motion_video. Use both for an adaptive mixed strategy."), "include_motion_video": _boolean("Convenience flag that adds motion_video to the allowed strategy formats."), "video_frequency_days": {"type": "integer", "minimum": 1, "maximum": 30, "description": "Minimum intended cadence between recurring motion-video pieces."}},
         "required": ["enabled"],
     },
     "stage_organic_social_post": {
         "type": "object", "additionalProperties": True,
-        "properties": {"page_id": _string("Exact connected Facebook Page ID."), "caption": _string("Final exact post/video caption."), "image_path": _string("Final generated image path returned by Admira Image 2."), "image_url": _string("Public image URL when no local file is used."), "video_path": _string("Final motion-video path returned by mcp_admira_generate_motion_graphic_video."), "video_url": _string("Public video URL when no local file is used."), "pillar": _string("Content pillar."), "objective": _string("Organic communication objective."), "scheduled_at": _string("Optional future time; publishing still requires explicit approval.")},
+        "properties": {"draft_id": _string("Existing draft ID returned when recording this proposal; preserves its history."), "page_id": _string("Exact connected Facebook Page ID."), "caption": _string("Final exact post/video caption."), "image_path": _string("Final generated image path returned by Admira Image 2."), "image_url": _string("Public image URL when no local file is used."), "video_path": _string("Final motion-video path returned by mcp_admira_generate_motion_graphic_video."), "video_url": _string("Public video URL when no local file is used."), "pillar": _string("Content pillar."), "objective": _string("Organic communication objective."), "scheduled_at": _string("Optional future time; publishing still requires explicit approval.")},
         "required": ["page_id", "caption"],
         "anyOf": [{"required": ["image_path"]}, {"required": ["image_url"]}, {"required": ["video_path"]}, {"required": ["video_url"]}],
     },

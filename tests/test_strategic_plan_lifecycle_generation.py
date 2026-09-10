@@ -52,6 +52,7 @@ class StrategicPlanLifecycleGenerationTests(unittest.TestCase):
             patch.object(self.dashboard, "write_onboarding_questions_memory", return_value={"status": "pending"}),
             patch.object(self.dashboard, "write_agent_onboarding_plan", return_value={}),
             patch.object(self.dashboard, "log_action"),
+            patch.object(self.dashboard, "get_meta_history_context", return_value={"status": "pending"}),
             patch.object(
                 self.dashboard,
                 "_strategic_plan_business_source",
@@ -213,7 +214,7 @@ class StrategicPlanLifecycleGenerationTests(unittest.TestCase):
         )
         self.assertIn("Preparé esta propuesta inicial de anuncios", visible)
         self.assertIn("1. Oportunidad publicitaria", visible)
-        self.assertIn("5. Próximos pasos para pulirlo", visible)
+        self.assertIn("7. Próximos pasos para pulirlo", visible)
         self.assertNotIn('{"', visible)
 
     def test_provider_failure_leaves_plan_missing_and_enforces_cooldown(self):

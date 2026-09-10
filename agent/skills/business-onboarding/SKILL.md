@@ -52,7 +52,7 @@ Never promote an `agent_proposal` or `inferred` value into official confirmed me
 
 The backend computes readiness; never send or invent `context_complete`. All required topics resolved moves the profile to `review_required`, not `complete`.
 
-At `review_required`, present one concise owner-useful business summary covering offer portfolio, priority buyers, differentiation, markets/capacity, economics, objectives, ads experience, and brand direction. Invite a natural correction or confirmation. Only the buyer-confirmed current `revision` may become `complete`, with matching `confirmed_revision`. A correction made before that initial confirmation increments the revision and returns it to review. A Page scope mismatch starts/resumes the profile for the new Page; do not silently reuse another Page's profile. Once onboarding is complete, it is a permanent lifecycle milestone: later buyer-supplied corrections, services, products, prices or other business facts are saved as normal profile maintenance without reopening or reconfirming the onboarding summary.
+At `review_required`, finish branding first: colors, style, tone, logo/no-logo, real-asset decision and what exactly to retain from each reference. Then present one concise owner-useful business summary covering offer portfolio, priority buyers, differentiation, markets/capacity, economics, objectives, ads experience, and brand direction. Invite a natural correction or confirmation. Only the buyer-confirmed current `revision` may become `complete`, with matching `confirmed_revision`. A correction made before that initial confirmation increments the revision and returns it to review. A Page scope mismatch starts/resumes the profile for the new Page; do not silently reuse another Page's profile. Once onboarding is complete, it is a permanent lifecycle milestone: later buyer-supplied corrections, services, products, prices or other business facts are saved as normal profile maintenance without reopening or reconfirming the onboarding summary.
 
 ## Strategic plan after business-summary confirmation
 
@@ -60,20 +60,19 @@ The interview produces inputs; it is not finished merely because those inputs
 were summarized. Immediately after the current onboarding summary becomes
 `complete`, the backend runs one isolated Codex plan compiler. That call
 receives the confirmed business profile, official product/ads memory and a
-fresh all-time Meta inventory/performance snapshot; it does not receive the
-Hermes conversation, tools or runtime. Sol runs with low reasoning effort,
-then Terra and Gemini 3.7 are fallbacks. The validated draft has exactly five
-plain-Spanish, ads-focused sections:
+fresh last-30-day Meta inventory/performance plus cached annual evidence snapshot; it does not receive the
+Hermes conversation, tools or runtime. Gemini 3.7, 3.6 and 3.5 Flash precede the connected ChatGPT pool (never Lite). The validated draft has seven sections integrating paid and organic:
 
 - `advertising_opportunity`: the most useful advertising opportunity now;
 - `audience_and_message`: priority audience, problem, promise and message;
 - `campaign_and_creative_plan`: recommended campaign, funnel and creative;
 - `budget_and_measurement`: budget logic, economics and practical KPIs;
+- `organic_content_strategy`: niche-specific pillars, themes and their business purpose;
+- `organic_daily_plan`: daily quantity, formats, examples, 15-day novelty and one extra verified Ads Library inspired idea;
 - `next_steps_and_questions`: immediate actions and questions to discuss.
 
 The draft is medium-long and readable in one normal Telegram response. It
-must not add organic strategy, referrals, operational expansion, or unsupported
-business claims. It is a discussion proposal, not an execution report.
+includes organic strategy and tells the buyer they can send real photos anytime into named vaults. Without suitable real material use AI illustrations, never fictional testimonials or results. It is a discussion proposal, not an execution report.
 
 Do not write, abbreviate, or save a competing initial plan yourself. Present
 the exact canonical draft returned by backend state and let the owner discuss

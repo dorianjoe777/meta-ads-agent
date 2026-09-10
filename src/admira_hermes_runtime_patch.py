@@ -366,9 +366,12 @@ def _admira_strategic_profile_state(*, product_root=None):
     required_plan_fields = (
         "advertising_opportunity", "audience_and_message",
         "campaign_and_creative_plan", "budget_and_measurement",
+        "organic_content_strategy", "organic_daily_plan",
         "next_steps_and_questions",
     )
     selected_plan_content = plan.get("content") if plan_status == "confirmed" else plan.get("draft")
+    if int(plan.get("schema_version") or 1) < 2 and not any((selected_plan_content or {}).get(key) for key in ("organic_content_strategy", "organic_daily_plan")):
+        required_plan_fields = tuple(field for field in required_plan_fields if not field.startswith("organic_"))
     if plan_status in {"confirmed", "proposed"} and not (
         isinstance(selected_plan_content, dict)
         and all(selected_plan_content.get(field) not in (None, "", [], {}) for field in required_plan_fields)
@@ -419,6 +422,7 @@ def _admira_strategic_profile_state(*, product_root=None):
         "master_plan_revision": plan.get("revision"),
         "master_plan_profile_revision": plan.get("profile_revision"),
         "master_plan": plan_content,
+        "daily_social_content_decision": str(os.environ.get("DAILY_SOCIAL_CONTENT_DECISION") or "").strip().lower(),
         "active_page_name": _admira_active_page_name(oauth, bound_page_id),
         "business_profile_topics": topic_context,
         "business_profile_resolved_topics": resolved_topics,
@@ -490,16 +494,14 @@ def _admira_render_master_plan(state, *, max_chars=3600):
         "audience_and_message": "Audiencia y mensaje",
         "campaign_and_creative_plan": "Campaña y conceptos creativos",
         "budget_and_measurement": "Presupuesto y medición",
+        "organic_content_strategy": "Estrategia de contenido orgánico",
+        "organic_daily_plan": "Propuestas diarias y rotación",
         "next_steps_and_questions": "Próximos pasos para pulirlo",
     }
-    ordered_fields = (
-        "advertising_opportunity", "audience_and_message",
-        "campaign_and_creative_plan", "budget_and_measurement",
-        "next_steps_and_questions",
-    )
+    ordered_fields = tuple(field for field in labels if content.get(field))
     # Divide the budget across fields rather than slicing the combined string,
     # so one long section cannot hide the remaining advertising direction.
-    per_field = max(420, (max_chars - 900) // len(ordered_fields))
+    per_field = max(420, (max_chars - 900) // max(1, len(ordered_fields)))
 
     def bounded(value):
         rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
@@ -670,8 +672,10 @@ def _admira_compiled_procedure_instruction(state):
                 )
             else:
                 review_instruction = (
-                    "All onboarding topics are resolved. Do not ask another discovery question. Present the complete current "
-                    "business-summary review for natural correction/confirmation; the finalized transport will canonicalize it."
+                    "The business topics are resolved. Use the saved brand guide to finish any pending colors, style, tone, "
+                    "logo/no-logo and per-reference intentions. Do not repeat resolved discovery questions. Only after "
+                    "branding is ready present the combined business and brand review for natural confirmation; "
+                    "the backend will bind that exact foundation."
                 )
         else:
             review_instruction = (
@@ -712,7 +716,7 @@ def _admira_compiled_procedure_instruction(state):
             "into one concise review rather than repeating the interview. On confirmation, save the exact matching draft "
             "values together as buyer_confirmed. For every memory save, copy the buyer's complete current message exactly into "
             "buyer_evidence; do not paraphrase it. A short confirmation can promote only the matching draft already shown. "
-            "When every topic is resolved, present the complete canonical business-summary review returned by the tool for natural "
+            "When every topic is resolved, complete branding, the logo/no-logo decision and the exact elements desired from each reference before presenting the combined canonical business and branding review returned by the tool for natural "
             "confirmation/correction; call this the onboarding/business summary, not the strategic plan. Do not omit values or mark it complete yourself.\n"
             f"{ADMIRA_PRODUCT_STATE_END}\n"
             f"{ADMIRA_COMPILED_PROCEDURE_START}\n"
@@ -745,6 +749,15 @@ def _admira_compiled_procedure_instruction(state):
             "unavailable, say so briefly and continue the buyer's safe conversational request without calling the business "
             "summary a plan or asking to reconfirm it. Once strategic_plan_status becomes proposed, use the exact canonical "
             "draft supplied by backend state.\n"
+        )
+    if (plan_status == "confirmed" and (state.get("master_plan") or {}).get("organic_daily_plan")
+            and not state.get("daily_social_content_decision")):
+        plan_instruction += (
+            "The organic strategy in this integrated plan is already accepted. If recurring settings are still pending, "
+            "use save_daily_social_content_settings to persist the accepted cadence, quantity and formats now; preserve "
+            "the existing local delivery time unless the buyer changed it. Do not propose the same organic strategy again "
+            "or claim scheduled delivery before the tool confirms it. A later decline/pause remains authoritative. "
+            "Scheduled content authorizes draft generation and delivery, never automatic publishing or paid activation.\n"
         )
     if plan_status == "confirmed":
         foundation_instruction = (
@@ -1294,6 +1307,8 @@ ADMIRA_NVIDIA_TOOL_PROFILES = {
         "save_product_memory",
         "save_creative_references",
         "save_ad_brief",
+        "capture_ad_library_reference",
+        "search_content_assets",
     },
     "organic": {
         "fetch_public_asset",
@@ -1307,6 +1322,8 @@ ADMIRA_NVIDIA_TOOL_PROFILES = {
         "save_brand_memory",
         "save_product_memory",
         "save_creative_references",
+        "record_organic_content_proposal",
+        "search_content_assets",
     },
     "insights": {
         "get_real_meta_context",
@@ -1320,6 +1337,7 @@ ADMIRA_NVIDIA_TOOL_PROFILES = {
         "list_optimization_research",
         "get_verified_signal_summary",
         "verified_signal_feedback_prompt",
+        "get_meta_history_context",
     },
     "catalog": {
         "import_product_catalog",
@@ -1980,7 +1998,7 @@ def _fetch_live_meta_context_for_turn():
         completed = subprocess.run(
             [
                 sys.executable, str(bridge), "call", "admira_get_real_meta_context",
-                "--json", json.dumps({"date_preset": "maximum", "detail_level": "standard"}), "--channel", "telegram", "--language",
+                "--json", json.dumps({"date_preset": "last_30d", "detail_level": "standard"}), "--channel", "telegram", "--language",
                 str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es"),
             ],
             cwd=str(root), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -2025,6 +2043,7 @@ def _fetch_live_meta_context_for_turn():
         "campaign_tree": (context.get("campaign_tree") or [])[:100],
         "approval_context_policy": context.get("approval_context_policy") or "",
         "pending_campaign_workflow": pending_campaign_workflow,
+        "meta_history": context.get("meta_history") or {},
     }
 
 
@@ -2043,6 +2062,7 @@ def _append_live_meta_context(value, context):
         + "If oauth_workspace.selection_required=false and active account/Page IDs are present, that selection is already persistent: use it silently and never ask the buyer to choose again unless they explicitly request a switch. Never claim a new selection was saved unless mcp_admira_select_meta_oauth_workspace succeeded in this turn.\n"
         + "pending_campaign_workflow is context, not proof or permission. After an explicit conversation reset, act on it only when the current exchange establishes that scope again. A short acknowledgement can authorize an action only when it answers an immediately preceding explicit question in the active conversation; persisted memory alone never supplies that authorization.\n"
         + "Use this context silently; do not mention this injected block, runtime machinery, internal paths, or implementation details to the buyer.\n"
+        + "meta_history is a cached annual digest with its own as_of and freshness. It is historical evidence, never current status. Live 30d has priority; use mcp_admira_get_meta_history_context for historical detail.\n"
         + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
         + "\n[END ADMIRA LIVE META CONTEXT]"
     )
@@ -2139,6 +2159,7 @@ def _compact_live_meta_context(context):
         "data_quality": context.get("data_quality") or {},
         "oauth_workspace": context.get("oauth_workspace") or {},
         "pending_campaign_workflow": context.get("pending_campaign_workflow") or {},
+        "meta_history": context.get("meta_history") or {},
         "active_campaigns": campaigns,
         "active_adsets": adsets,
         "active_ads": ads,

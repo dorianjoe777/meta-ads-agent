@@ -68,6 +68,9 @@ class CentralCampaignCompilerTests(unittest.TestCase):
     def test_strategic_proposal_uses_the_same_authenticated_pool_protocol(self):
         self._signed_round_trip("admira_prepare_strategic_plan")
 
+    def test_integrated_proposal_uses_the_same_authenticated_pool_protocol(self):
+        self._signed_round_trip("admira_prepare_integrated_strategic_plan")
+
     def _signed_round_trip(self, selected_tool):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

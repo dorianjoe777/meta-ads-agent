@@ -902,13 +902,13 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
         english = hermes_gateway.gateway_prompt("en")
         spanish = hermes_gateway.gateway_prompt("es")
         self.assertIn("strategic business onboarding is mandatory", english)
-        self.assertIn("only the confirmed current revision is complete", english)
-        self.assertIn("complete the full Page-scoped strategic profile -> present and confirm its current review", english)
+        self.assertIn("Only the confirmed current revision of that combined foundation is complete", english)
+        self.assertLess(english.index("resolve branding/logo"), english.index("present one combined business and brand review"))
         self.assertNotIn("starting with one concrete campaign", english)
         self.assertNotIn("campaign-first path", english)
         self.assertIn("el onboarding estratégico es obligatorio", spanish)
         self.assertIn("solo la revisión actual confirmada queda completa", spanish)
-        self.assertIn("completar el perfil estratégico íntegro asociado a esa Página -> presentar y confirmar su revisión actual", spanish)
+        self.assertLess(spanish.index("resolver colores, estilo, tono, logo"), spanish.index("presentar y confirmar la revisión combinada"))
 
     def test_provider_turn_budget_is_eight(self):
         for brain in (

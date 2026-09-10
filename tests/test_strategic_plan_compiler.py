@@ -184,7 +184,7 @@ class StrategicPlanCompilerTests(unittest.TestCase):
              mock.patch.object(compiler, "_terra_compile") as personal:
             result = compiler.compile_strategic_plan({}, {}, config=self.config())
         self.assertTrue(result["ok"])
-        self.assertEqual(calls, [*compiler.GEMINI_MODELS, "admira_prepare_strategic_plan"])
+        self.assertEqual(calls, [*compiler.GEMINI_MODELS, "admira_prepare_integrated_strategic_plan"])
         self.assertEqual(result["provider"], "hosted-central-codex")
         self.assertEqual(result["model"], compiler.TERRA_MODEL)
         personal.assert_not_called()
@@ -277,7 +277,7 @@ class StrategicPlanCompilerTests(unittest.TestCase):
         self.assertNotIn(secret, json.dumps(result))
         self.assertEqual(result["reason"], "strategic_plan_provider_failed")
 
-    def test_schema_has_exactly_five_required_top_level_strings(self):
+    def test_schema_requires_paid_and_organic_sections(self):
         schema = compiler.strategic_plan_schema()
         self.assertEqual(tuple(schema["properties"]), compiler.PLAN_FIELDS)
         self.assertEqual(schema["required"], list(compiler.PLAN_FIELDS))
@@ -294,6 +294,8 @@ class StrategicPlanCompilerTests(unittest.TestCase):
                 "audience_and_message",
                 "campaign_and_creative_plan",
                 "budget_and_measurement",
+                "organic_content_strategy",
+                "organic_daily_plan",
                 "next_steps_and_questions",
             ),
         )
@@ -305,10 +307,10 @@ class StrategicPlanCompilerTests(unittest.TestCase):
         )
         for field in compiler.PLAN_FIELDS:
             self.assertIn(field, prompt)
-        self.assertIn("propuesta inicial de anuncios", prompt.lower())
-        self.assertIn("propuesta inicial", prompt.lower())
+        self.assertIn("meta ads y contenido orgánico", prompt.lower())
+        self.assertIn("estrategia inicial", prompt.lower())
         self.assertIn("anuncios", prompt.lower())
-        self.assertIn("no incluyas referidos", prompt.lower())
+        self.assertIn("nunca uses un mix universal", prompt.lower())
         self.assertIn("estrategia orgánica", prompt.lower())
 
     def test_rejects_a_section_cut_off_mid_sentence(self):

@@ -67,6 +67,10 @@ TOOL_MAP = {
     "admira_save_daily_social_content_settings": "save_daily_social_content_settings",
     "admira_stage_organic_social_post": "stage_organic_social_post",
     "admira_save_content_asset": "save_content_asset",
+    "admira_record_organic_content_proposal": "record_organic_content_proposal",
+    "admira_get_meta_history_context": "get_meta_history_context",
+    "admira_capture_ad_library_reference": "capture_ad_library_reference",
+    "admira_search_content_assets": "search_content_assets",
     "admira_record_verified_signal": "record_verified_signal",
     "admira_get_verified_signal_summary": "get_verified_signal_summary",
     "admira_verified_signal_feedback_prompt": "verified_signal_feedback_prompt",
@@ -306,6 +310,7 @@ def compact_meta_context(context, detail_level="standard"):
     campaign_limit, adset_limit, ad_limit = ((100, 200, 300) if deep else (40, 80, 120))
     compact = {
         "metrics_source": context.get("metrics_source") or {},
+        "meta_history": context.get("meta_history") or {},
         "inventory_counts": context.get("inventory_counts") or {},
         "summary": context.get("summary") or {},
         "metrics_range": context.get("metrics_range") or {},
@@ -1781,7 +1786,7 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
         payload["image_paths"] = reference_paths[:8]
 
     if tool == "admira_get_real_meta_context":
-        date_preset = str(args.get("date_preset") or args.get("range") or "maximum").strip().lower()
+        date_preset = str(args.get("date_preset") or args.get("range") or "last_30d").strip().lower()
         detail_level = str(args.get("detail_level") or "standard").strip().lower()
         include_breakdowns = detail_level in {"deep", "full", "breakdowns"}
         live_sync = dashboard.refresh_managed_real_metrics(
@@ -1800,6 +1805,10 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             # keeps its own buyer-selected date range and is not silently reset
             # by background Telegram synchronization.
             dashboard_data["metrics"] = live_sync["metrics"]
+        get_history = getattr(dashboard, "get_meta_history_context", None)
+        dashboard_data["meta_history"] = (
+            get_history(background=True) if callable(get_history) else {}
+        )
         context = account_context(dashboard_data)
         oauth = dashboard.social_oauth_status()
         oauth_accounts = oauth.get("accounts") or []

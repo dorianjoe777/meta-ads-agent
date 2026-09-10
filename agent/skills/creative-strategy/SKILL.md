@@ -36,6 +36,8 @@ More variation increases the chance of finding a winner, but do not starve small
 
 Use Meta Ad Library and public references only for visible creative patterns. Never claim public competitor ads reveal private CPA, ROAS, conversions, or winners. Convert patterns into original hypotheses.
 
+For recurring competitor-inspired candidates, preserve source provenance: exact Meta Ad Library URL, public Page/competitor label, observation date, angle and visible structure. Treat the competitor visual as a one-task reference only. Persistent brand references and the buyer's confirmed brand guide remain authoritative in Image 2. The resulting proposal should be original and may be archived as `competitor_inspired_creative`; it becomes approved for paid use only after an explicit buyer request.
+
 ## Organic content bridge
 
 If the buyer wants daily posts or a content calendar, switch to `skills/organic-content-strategy/SKILL.md` before production. Keep organic posts separate from launch-ready ads:

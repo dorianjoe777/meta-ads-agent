@@ -30,6 +30,171 @@ OFFER_MAP_FILENAME = "Offer map.md"
 CODEX_GENERATED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 CODEX_IMAGE_EXEC_MODEL = "gpt-5.6-terra"
 BRAND_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def extract_logo_background_to_transparency(source_path, output_path=None):
+    """Create a transparent PNG when a logo has a safe light exterior matte.
+
+    Only pixels connected to the outside edge are eligible for removal. This
+    preserves enclosed white artwork such as lettering, icons and highlights.
+    Ambiguous images fail closed and leave the original asset untouched.
+    """
+    source = Path(str(source_path or ""))
+    result = {
+        "ok": False,
+        "background_removed": False,
+        "already_transparent": False,
+        "path": str(source),
+        "reason": "background_not_confident",
+    }
+    try:
+        from collections import deque
+        from PIL import Image
+    except ImportError:
+        result["reason"] = "pillow_unavailable"
+        return result
+
+    try:
+        with Image.open(source) as opened:
+            opened.load()
+            image = opened.convert("RGBA")
+    except (OSError, ValueError):
+        result["reason"] = "invalid_image"
+        return result
+
+    width, height = image.size
+    pixel_count = width * height
+    if width < 2 or height < 2 or pixel_count > 8_000_000:
+        result["reason"] = "unsafe_dimensions"
+        return result
+
+    alpha_min, _alpha_max = image.getchannel("A").getextrema()
+    if alpha_min < 250:
+        result.update({
+            "ok": True,
+            "already_transparent": True,
+            "reason": "already_transparent",
+        })
+        return result
+
+    pixels = image.load()
+    border = []
+    for x in range(width):
+        border.append(pixels[x, 0][:3])
+        border.append(pixels[x, height - 1][:3])
+    for y in range(1, height - 1):
+        border.append(pixels[0, y][:3])
+        border.append(pixels[width - 1, y][:3])
+    if not border:
+        result["reason"] = "missing_border"
+        return result
+
+    midpoint = len(border) // 2
+    matte = tuple(sorted(sample[channel] for sample in border)[midpoint] for channel in range(3))
+    if min(matte) < 205 or max(matte) - min(matte) > 24:
+        result["reason"] = "matte_not_light_neutral"
+        return result
+
+    def distance(rgb):
+        return max(abs(int(rgb[channel]) - matte[channel]) for channel in range(3))
+
+    border_close = sum(1 for sample in border if distance(sample) <= 30)
+    if border_close / len(border) < 0.88:
+        result["reason"] = "matte_not_uniform"
+        return result
+    corners = (
+        pixels[0, 0][:3],
+        pixels[width - 1, 0][:3],
+        pixels[0, height - 1][:3],
+        pixels[width - 1, height - 1][:3],
+    )
+    if sum(1 for sample in corners if distance(sample) <= 30) < 3:
+        result["reason"] = "corners_not_uniform"
+        return result
+
+    hard_tolerance = 18
+    soft_tolerance = 58
+    visited = bytearray(pixel_count)
+    queue = deque()
+
+    def enqueue(x, y):
+        index = y * width + x
+        if visited[index] or distance(pixels[x, y][:3]) > soft_tolerance:
+            return
+        visited[index] = 1
+        queue.append((x, y))
+
+    for x in range(width):
+        enqueue(x, 0)
+        enqueue(x, height - 1)
+    for y in range(1, height - 1):
+        enqueue(0, y)
+        enqueue(width - 1, y)
+
+    while queue:
+        x, y = queue.popleft()
+        if x:
+            enqueue(x - 1, y)
+        if x + 1 < width:
+            enqueue(x + 1, y)
+        if y:
+            enqueue(x, y - 1)
+        if y + 1 < height:
+            enqueue(x, y + 1)
+
+    removed = 0
+    visible = 0
+    for y in range(height):
+        for x in range(width):
+            index = y * width + x
+            red, green, blue, old_alpha = pixels[x, y]
+            if not visited[index]:
+                if old_alpha > 32:
+                    visible += 1
+                continue
+            delta = distance((red, green, blue))
+            if delta <= hard_tolerance:
+                new_alpha = 0
+            else:
+                new_alpha = int(round(255 * (delta - hard_tolerance) / (soft_tolerance - hard_tolerance)))
+                new_alpha = max(0, min(255, new_alpha))
+            if new_alpha <= 16:
+                removed += 1
+            if new_alpha > 32:
+                visible += 1
+            if 0 < new_alpha < 255:
+                fraction = new_alpha / 255.0
+                channels = []
+                for value, background in zip((red, green, blue), matte):
+                    corrected = round((value - background * (1.0 - fraction)) / fraction)
+                    channels.append(max(0, min(255, corrected)))
+                red, green, blue = channels
+            pixels[x, y] = (red, green, blue, new_alpha)
+
+    if removed < max(16, int(pixel_count * 0.02)):
+        result["reason"] = "insufficient_background"
+        return result
+    if visible < max(16, int(pixel_count * 0.001)):
+        result["reason"] = "foreground_too_small"
+        return result
+    if image.getchannel("A").getbbox() is None:
+        result["reason"] = "foreground_missing"
+        return result
+
+    destination = Path(output_path) if output_path else source.with_name(f"{source.stem}-transparent.png")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        image.save(destination, format="PNG", optimize=True)
+    except OSError:
+        result["reason"] = "png_write_failed"
+        return result
+    result.update({
+        "ok": True,
+        "background_removed": True,
+        "path": str(destination),
+        "reason": "exterior_matte_removed",
+    })
+    return result
 GENERAL_EXAMPLE = BRAND_DIR / "general_branding.example.md"
 PRODUCT_EXAMPLE = PRODUCT_DIR / "product.example.md"
 AD_BRIEF_EXAMPLE = AD_BRIEF_DIR / "ad_brief.example.md"

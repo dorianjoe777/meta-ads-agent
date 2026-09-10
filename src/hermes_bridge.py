@@ -1345,7 +1345,7 @@ For each turn, read the buyer message normally. If you need live account context
 - `memory/campaign_metric_profiles.json`: dashboard KPI priorities chosen for each real campaign; audit these against the live objective/event and update them with the product tool when needed.
 - `memory/content_asset_library.json`: buyer-shared logos, photos, videos, references, offers, and other assets categorized by intended use.
 - `memory/content_strategy.md`: organic content strategy, pillars, cadence, and daily-post preferences when present.
-- `memory/organic_content_posts.json`: exact organic drafts that were approved and really published, including their Meta post IDs. Pending approvals are still not ambient continuity.
+- `memory/organic_content_posts.json`: organic proposals from the last 15 days, including unpublished drafts, concepts and publication status. These are novelty evidence, never publication authorization.
 - `memory/durable_conversation_memory.json`: confirmed decisions, preferences, blockers, next steps, and workflow agreements that did not fit a narrower specialist store.
 - `memory/currently-decided/`: generated buyer-specific companion state for each specialist domain. Use it with the compiled current procedure; update state only through official save tools.
 - `brand_guides/Offer map.md`: parent-brand/child-offer index. Use it to avoid mixing products/services/offers under the same brand.
@@ -1484,7 +1484,7 @@ All buyer interaction must use ordinary conversational text. Never call Hermes' 
 
 After a successful Facebook account/Page selection, if the general business profile is genuinely empty, strategic business onboarding is mandatory before producing, staging, or creating a campaign. Do not offer a skip-to-campaign path. Make it a natural, engaging manager conversation rather than a questionnaire: inspect connected assets and live Meta data first, provide useful analysis and early ideas, persist confirmed facts, and ask one decision-focused owner question at a time. Progressively cover the full service/product set, ideal customers and buying situations, differentiators and proof, locations/markets, capacity and constraints, prices, costs/contribution margins, global objectives, advertising experience/detail preference, and branding/assets. Early ideas do not authorize campaign production, and unknown facts must be recorded as unknown or explicit assumptions rather than invented.
 
-After the onboarding business summary is confirmed, the backend compiles one compact ads-focused plan through an isolated Codex CLI call grounded in confirmed business economics and a fresh all-time Meta inventory/history/performance snapshot. Sol uses low reasoning effort, then Terra and Gemini 3.7 are fallbacks. Present that exact canonical five-section draft—advertising opportunity; audience and message; campaign and creative plan; budget and measurement; next steps and questions. Use plain Spanish and enough detail for one normal Telegram response. Do not add organic strategy, referrals, operational expansion, or unsupported claims. Do not improvise, abbreviate, save, or present a competing initial plan in Hermes. If compilation is temporarily unavailable, say so instead of substituting a generic campaign outline. Make clear that the draft is an idea the buyer may discuss, leave for later, or confirm; it is not an execution lock. Once confirmed, use it actively in every turn without asking to reconfirm it. New business facts, services, campaigns, results or ordinary conversation never modify or invalidate it. Only a direct buyer request to update the saved strategic plan may open a revised draft, and that revision becomes final only after a later natural confirmation.
+After business discovery and branding (logo, colors, style, tone and per-reference elements) are complete and the combined foundation summary is confirmed, the backend compiles one integrated Meta Ads + organic-content plan through an isolated Codex CLI call grounded in confirmed business economics and a fresh last-30-day Meta inventory/performance plus a compact cached annual digest snapshot. Gemini 3.7, 3.6 and 3.5 Flash precede the connected ChatGPT pool fallback; never use Lite for this compiler. Present that exact canonical seven-section draft—advertising opportunity; audience and message; campaign and creative plan; budget and measurement; organic content strategy; organic daily plan; next steps and questions. Use plain Spanish and enough detail for one normal Telegram response. Include niche-specific organic pillars, a daily plan chosen for the business (not a universal fixed post count), 15-day novelty memory, vault instructions and AI illustration fallback, plus one extra verified Ads Library inspired design using the buyer branding. Never invent business or competitor results. Do not improvise, abbreviate, save, or present a competing initial plan in Hermes. If compilation is temporarily unavailable, say so instead of substituting a generic campaign outline. Make clear that the draft is an idea the buyer may discuss, leave for later, or confirm; it is not an execution lock. Once confirmed, use it actively in every turn without asking to reconfirm it. New business facts, services, campaigns, results or ordinary conversation never modify or invalidate it. Only a direct buyer request to update the saved strategic plan may open a revised draft, and that revision becomes final only after a later natural confirmation.
 
 Complete the buyer-confirmed branding/logo foundation before producing organic content or Ads. Image remains available here only for real logo candidates, moodboards, brand exploration and brand samples. Attach each actual file for conversational review; a candidate becomes official only after the buyer approves it and the brand save confirms it. Image calls are synchronous: a blocked result or a result without a media file is never queued and must never be described as sent or about to appear.
 
@@ -1780,7 +1780,9 @@ def recent_creative_memory_context():
 
 
 def business_memory_context():
+    from organic_content_memory import recent_posts
     files, product_guides, ad_briefs = business_memory_files()
+    profile = read_json(files["business_profile"], {})
     memory = {
         "business_profile": redact_payload(read_json(files["business_profile"], {})),
         "audience_strategy": redact_payload(read_json(files["audience_strategy"], {})),
@@ -1792,7 +1794,7 @@ def business_memory_context():
         "creative_references": read_text(files["creative_references"]),
         "content_asset_library": scrub_memory(redact_payload(read_json(files["content_asset_library"], {"items": []}))),
         "content_strategy": read_text(files["content_strategy"]),
-        "organic_content_posts": scrub_memory(redact_payload(read_json(files["organic_content_posts"], {"items": []}))),
+        "organic_content_posts": scrub_memory(redact_payload(recent_posts(read_json(files["organic_content_posts"], {"items": []}), page_id=str(profile.get("active_strategic_page_id") or "")))),
         "durable_conversation_memory": scrub_memory(redact_payload(read_json(files["durable_conversation_memory"], {"items": []}))),
         "campaign_metric_profiles": scrub_memory(redact_payload(read_json(files["campaign_metric_profiles"], {"campaigns": {}}))),
         "brand_guides": {
@@ -2013,7 +2015,7 @@ def build_currently_decided_state(memory):
             [
                 ("Accepted content strategy and cadence", memory.get("content_strategy"), "text", 7000),
                 ("Content asset library", memory.get("content_asset_library"), "json", 5500),
-                ("Approved and published organic posts", memory.get("organic_content_posts"), "json", 5500),
+                ("Last 15 days of organic proposals, including unpublished pieces", memory.get("organic_content_posts"), "json", 5500),
                 ("Other confirmed organic-content decisions", _current_decision_items(memory, {"organic", "content", "social", "post"}), "json", 3500),
             ],
         ),
@@ -2466,6 +2468,8 @@ _MASTER_PLAN_LABELS = {
     "audience_and_message": "Audiencia y mensaje",
     "campaign_and_creative_plan": "Campaña y plan creativo",
     "budget_and_measurement": "Presupuesto y medición",
+    "organic_content_strategy": "Estrategia de contenido orgánico",
+    "organic_daily_plan": "Propuestas diarias y rotación",
     "next_steps_and_questions": "Próximos pasos y preguntas",
 }
 

@@ -3597,8 +3597,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(targeting_search["ok"] and targeting_search["result"]["items"][0]["id"] == "6001", "Tool bridge exposes Meta's live interest catalog to Hermes")
             self.assert_true(targeting_inspection["ok"] and targeting_inspection["result"]["confirmed"], "Tool bridge exposes live ad-set targeting verification to Hermes")
             self.assert_true(context["live_sync"]["ok"] and context["live_sync"]["rows"] == 1 and called_tools[0] == "live_meta_sync", "Real Meta context forces a live inventory synchronization before reading cached dashboard context")
-            self.assert_true(calls[0][0]["kwargs"]["date_preset"] == "maximum" and calls[0][0]["kwargs"]["persist"] is False and calls[0][0]["kwargs"]["include_breakdowns"] is True, "Agent live context defaults to a fresh all-time deep read without changing the dashboard's selected range")
-            self.assert_true(context["context"]["pending_approvals"] == [] and context["context"]["breakdowns"]["placement"][0]["spend"] == 12, "Ambient live context excludes old approvals while exposing deeper Meta breakdowns")
+            self.assert_true(calls[0][0]["kwargs"]["date_preset"] == "last_30d" and calls[0][0]["kwargs"]["persist"] is False and calls[0][0]["kwargs"]["include_breakdowns"] is False, "Agent live context defaults to a fresh bounded last-30-day read without changing the dashboard's selected range")
+            self.assert_true("pending_approvals" not in context["context"] and "breakdowns" not in context["context"], "Ambient live context excludes old approvals and omits heavy breakdowns by default")
             self.assert_true(image["product_tool"] == "codex_image_generate" and "codex_image_generate" in called_tools, "Tool bridge maps Codex/Image MCP calls to dashboard action handlers")
             self.assert_true(image.get("media_attachment") == f"MEDIA:{generated_image.resolve()}" and "Do not paste MEDIA" in image.get("buyer_delivery_instruction", ""), "Tool bridge gives Hermes a native media attachment directive for generated creative images")
             self.assert_true(review["product_tool"] == "review_signal_quality" and "review_signal_quality" in called_tools, "Tool bridge maps signal-quality MCP review to dashboard action handlers")
@@ -4269,12 +4269,15 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                     "category": "local",
                     "purpose": "usar como fondo real del spa para posts diarios",
                     "notes": "recepción del negocio",
+                    "vault_name": "fotos de sucursal del negocio",
+                    "content_group": "sucursal-principal",
                     "image_paths": [str(path) for path in image_paths],
                 }
             )
             library = json.loads(library_path.read_text(encoding="utf-8"))
             self.assert_true(result["saved"] and result["saved_asset_count"] == 3 and result["count"] == 3, "Content asset memory archives every image in a buyer batch")
             self.assert_true(all(item["category"] == "location" and item["purpose"] == "usar como fondo real del spa para posts diarios" for item in library["items"]), "Every batch item stores the classified purpose for strategy reuse")
+            self.assert_true(all(item["vault_name"] == "fotos de sucursal del negocio" and item["content_group"] == "sucursal-principal" for item in library["items"]), "Buyer-named content vault and related-asset group persist across every item in the classified batch")
             self.assert_true(all(item["preservation_mode"] == "pixel_locked" and item["classification_status"] == "classified" for item in library["items"]), "Buyer-owned real photos default to classified pixel-locked assets")
             durable_paths = [Path(item["file_paths"][0]) for item in library["items"]]
             self.assert_true(all(path.parent == asset_files_dir.resolve() and path.exists() for path in durable_paths), "Every uploaded photo is copied into durable product storage instead of referencing ephemeral Telegram cache")
@@ -6605,6 +6608,77 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             else:
                 references_path.parent.mkdir(parents=True, exist_ok=True)
                 references_path.write_bytes(references_before)
+
+    def test_branding_precedes_final_business_review(self):
+        """Test review-ready business facts route through branding before final confirmation."""
+        print("\nTesting Branding Before Final Business Review...")
+
+        dashboard = load_dashboard_module()
+        originals = {
+            "social_oauth_status": dashboard.social_oauth_status,
+            "organic_content_strategy_status": dashboard.organic_content_strategy_status,
+            "ads_campaign_onboarding_status": dashboard.ads_campaign_onboarding_status,
+            "creative_strategy_readiness": dashboard.creative_strategy_readiness,
+            "business_master_plan_readiness": dashboard.business_master_plan_readiness,
+            "onboarding_interview_status": dashboard.onboarding_interview_status,
+            "strategic_business_profile_readiness": dashboard.strategic_business_profile_readiness,
+            "branding_creatives_status": dashboard.branding_creatives_status,
+        }
+        try:
+            dashboard.social_oauth_status = lambda: {
+                "connected": True,
+                "active_ad_account_id": "act_test",
+                "active_page_id": "page_test",
+                "accounts": [],
+                "pages": [],
+                "businesses": [],
+            }
+            dashboard.organic_content_strategy_status = lambda: "pending"
+            dashboard.ads_campaign_onboarding_status = lambda profile=None: "pending"
+            dashboard.creative_strategy_readiness = lambda require_brief=False: {
+                "ready": False,
+                "missing": [{"key": "colors"}],
+                "next_question": "¿Qué colores quieres?",
+                "budget": "",
+            }
+            dashboard.business_master_plan_readiness = lambda profile=None: {"status": "missing"}
+            dashboard.onboarding_interview_status = lambda profile=None: "review_required"
+            dashboard.strategic_business_profile_readiness = lambda profile=None: {
+                "status": "review_required",
+                "review_required": True,
+                "unresolved_topics": [],
+            }
+            dashboard.branding_creatives_status = lambda: "pending"
+
+            branding_phase = dashboard.agent_onboarding_phase({})
+            self.assert_true(
+                branding_phase["phase"] == "branding_creatives_creation"
+                and branding_phase["next_step"] == "¿Qué colores quieres?",
+                "Review-ready business facts enter branding before final confirmation",
+            )
+
+            dashboard.branding_creatives_status = lambda: "completed"
+            review_phase = dashboard.agent_onboarding_phase({})
+            self.assert_true(
+                review_phase["phase"] == "business_discovery"
+                and "revisión final única" in review_phase["next_step"],
+                "Completed branding returns once to the final consolidated business review",
+            )
+        finally:
+            for name, value in originals.items():
+                setattr(dashboard, name, value)
+
+    def test_daily_social_prompt_uses_15_day_novelty_and_vaults(self):
+        """Test recurring organic generation grounds itself in recent history and content vaults."""
+        print("\nTesting Daily Social Novelty Memory...")
+        prompt = hermes_gateway.daily_social_content_prompt()
+        self.assert_true(
+            "últimos 15 días" in prompt
+            and "vault_name" in prompt
+            and "content_group" in prompt
+            and "Evita repetir sustancialmente" in prompt,
+            "Daily organic prompt uses a 15-day semantic novelty window and buyer-named vaults",
+        )
 
     def test_agent_onboarding_phase_tools_create_durable_memory(self):
         """Test Telegram/dashboard agent tools can move from business to branding to campaign memory."""
@@ -12287,7 +12361,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             dashboard.require_cloud_license = lambda *args, **kwargs: None
             dashboard.create_campaign = lambda payload: {"status": "pending", "id": "approval_test", "payload": payload}
             live_refreshes = []
-            dashboard.refresh_managed_real_metrics = lambda reason="manual": live_refreshes.append(reason) or {"ok": True, "rows": 1}
+            dashboard.refresh_managed_real_metrics = lambda reason="manual", **kwargs: live_refreshes.append((reason, kwargs)) or {"ok": True, "rows": 1}
 
             fake = FakeSelf()
             dashboard.DashboardHandler.post_chat(
@@ -12302,7 +12376,10 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(not generic_calls, "Dashboard chat uses local product action router before generic agent for campaign creation")
             self.assert_true(result["routed_action"]["type"] == "create_campaign_stack" and result["routed_action"]["staged"] is True, "Dashboard chat stages campaign creation from natural language")
             self.assert_true("terminal" not in result["reply"].lower() and "aprobación" in result["reply"].lower(), "Dashboard chat reply does not expose CLI/terminal as a blocker")
-            self.assert_true(live_refreshes == ["dashboard_chat_live_context"], "Dashboard chat synchronizes Meta before routing an account or campaign request")
+            self.assert_true(
+                live_refreshes == [("dashboard_chat_live_context", {"date_preset": "last_30d", "persist": False, "include_breakdowns": False})],
+                "Dashboard chat synchronizes a non-persistent last-30-day Meta view before routing an ordinary request",
+            )
             self.assert_true(dashboard.chat_message_requires_live_meta_sync("Ayúdame con el branding") and not dashboard.chat_message_requires_live_meta_sync("/model"), "Dashboard chat also refreshes Meta silently on unrelated ordinary turns but not control commands")
         finally:
             dashboard.dashboard_payload = original_dashboard_payload
@@ -12328,6 +12405,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         class FakeDashboard:
             def __init__(self):
                 self.logged = []
+                self.live_reasons = []
                 self.pending = [
                     {
                         "id": "approval_test",
@@ -12339,6 +12417,15 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
 
             def dashboard_payload(self):
                 return {"metrics": {}, "recommendations": [], "fatigue": [], "pending": self.pending, "audience_strategy": {}, "business_profile": {"main_offer": "Curso Test"}}
+
+            def agent_turn_dashboard_state(self, reason="agent_turn_live_context"):
+                self.live_reasons.append(reason)
+                state = self.dashboard_payload()
+                state["live_meta_sync"] = {"attempted": True, "ok": True, "date_preset": "last_30d"}
+                return state
+
+            def social_oauth_status(self):
+                return {"connected": True, "active_ad_account_id": "act_1", "active_page_id": "page_1", "accounts": [], "pages": [], "businesses": []}
 
             def execute_agent_tool(self, tool_request, payload):
                 if not tool_request:
@@ -12420,6 +12507,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true("Aprobacion ejecutada" in approved_text, "Telegram text can approve the single exact pending decision")
             self.assert_true("approval_social_secret" not in sanitized_approval_prompt and "aprobado" in sanitized_approval_prompt.lower(), "Telegram sanitizes accidental model-emitted approval IDs into natural approval wording")
             self.assert_true(received_payloads[0]["business_profile"]["main_offer"] == "Curso Test", "Telegram gives Hermes the selected client's business profile")
+            self.assert_true(received_payloads[0]["live_meta_sync"]["date_preset"] == "last_30d" and fake_dashboard.live_reasons, "Telegram refreshes bounded live Meta context before ordinary agent turns")
             self.assert_true("session_key" in received_payloads[0] and "history" not in received_payloads[0], "Telegram passes a Hermes session key instead of replaying chat history")
             self.assert_true("Decisiones pendientes" in pending_reply, "Telegram lists pending approvals")
             self.assert_true(any(item[0] == "keyboard" for item in sent), "Telegram sends approve/reject buttons")
@@ -14681,6 +14769,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.test_meta_account_timezone_drives_buyer_crons,
             self.test_admira_mcp_empty_argument_recovery_is_safe,
             self.test_content_asset_library_persists_buyer_files,
+            self.test_branding_precedes_final_business_review,
+            self.test_daily_social_prompt_uses_15_day_novelty_and_vaults,
             self.test_public_asset_fetcher_normalizes_drive_and_blocks_private_urls,
             self.test_public_asset_fetcher_extracts_video_frames_for_vision_review,
             self.test_admira_mcp_creative_timeout_returns_buyer_fallback,
